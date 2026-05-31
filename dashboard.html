@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sukabantu Insights — CS Chatbot Dashboard</title>
+  <style>
+    :root {
+      --bg: #FAFBFC;
+      --surface: #FFFFFF;
+      --border: #E9ECEF;
+      --border-strong: #DEE2E6;
+      --text: #1C2B3A;
+      --text-muted: #6B7785;
+      --text-subtle: #95A1AE;
+      --primary: #1286E1;
+      --primary-soft: #E8F4FD;
+      --primary-strong: #0B6BB8;
+      --accent: #6741D9;
+      --accent-soft: #EDE4FB;
+      --hover: #F8F9FA;
+      --success: #2BA77A;
+      --success-soft: #E1F5EC;
+      --warning: #F1A325;
+      --warning-soft: #FFF4DE;
+      --danger: #E5484D;
+      --danger-soft: #FFEBE9;
+      --radius: 10px;
+      --radius-lg: 14px;
+      --sidebar-w: 240px;
+      --shadow-sm: 0 1px 2px rgba(28, 43, 58, 0.04);
+      --shadow-md: 0 4px 16px rgba(28, 43, 58, 0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; }
+
+    /* ---------- App shell ---------- */
+    .app {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      min-height: 100vh;
+    }
+
+    /* ---------- Sidebar ---------- */
+    .sidebar {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 6px;
+    }
+    .brand .mark {
+      width: 30px; height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: grid; place-items: center;
+      color: #fff; font-weight: 800; font-size: 14px;
+      box-shadow: 0 2px 6px rgba(18, 134, 225, 0.30);
+    }
+    .brand .name {
+      font-weight: 700; font-size: 15px; letter-spacing: -0.01em;
+    }
+    .brand .tag {
+      font-size: 11px; color: var(--text-subtle); margin-top: 1px;
+    }
+    .nav-section {
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .nav-title {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-subtle);
+      font-weight: 700;
+      padding: 0 10px;
+      margin-bottom: 6px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      color: var(--text-muted);
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+    .nav-item:hover { background: var(--hover); color: var(--text); }
+    .nav-item.active {
+      background: var(--primary-soft);
+      color: var(--primary-strong);
+      font-weight: 600;
+    }
+    .nav-item .icon {
+      width: 16px; height: 16px;
+      display: inline-grid; place-items: center;
+      color: currentColor;
+    }
+    .nav-item .icon svg { width: 16px; height: 16px; stroke: currentColor; }
+
+    /* ---------- Main column ---------- */
+    .main {
+      display: flex; flex-direction: column;
+      min-width: 0;
+    }
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 16px;
+    }
+    .topbar h1 {
+      font-size: 18px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .topbar .subtitle {
+      font-size: 12.5px; color: var(--text-muted); margin-top: 2px;
+    }
+    .top-tools { display: flex; align-items: center; gap: 10px; }
+    .search {
+      position: relative;
+    }
+    .search input {
+      width: 300px;
+      padding: 9px 12px 9px 34px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--surface);
+      font: inherit;
+      color: var(--text);
+      transition: border 0.12s, box-shadow 0.12s;
+    }
+    .search input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-soft);
+    }
+    .search svg {
+      position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%);
+      width: 16px; height: 16px;
+      stroke: var(--text-subtle);
+    }
+    .pill-btn {
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 600; font-size: 13px;
+      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .pill-btn:hover { background: var(--hover); }
+    .pill-btn.primary {
+      background: var(--primary); border-color: var(--primary); color: #fff;
+    }
+    .pill-btn.primary:hover { background: var(--primary-strong); }
+
+    .content {
+      padding: 24px 28px 40px;
+      display: flex; flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ---------- KPI cards ---------- */
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px 18px;
+      box-shadow: var(--shadow-sm);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .kpi .label {
+      font-size: 12px; color: var(--text-muted);
+      font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .kpi .label .dot {
+      width: 8px; height: 8px; border-radius: 999px;
+      background: var(--primary);
+    }
+    .kpi.kpi-open .dot { background: var(--warning); }
+    .kpi.kpi-resolved .dot { background: var(--success); }
+    .kpi.kpi-queue .dot { background: var(--accent); }
+    .kpi.kpi-attach .dot { background: var(--primary); }
+    .kpi .value {
+      font-size: 26px; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .kpi .hint {
+      font-size: 11.5px; color: var(--text-subtle);
+    }
+
+    /* ---------- Chart row ---------- */
+    .chart-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 14px;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: 18px 20px;
+      display: flex; flex-direction: column;
+    }
+    .panel-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .panel-header h2 {
+      font-size: 14px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .panel-header .sub {
+      font-size: 12px; color: var(--text-muted); margin-top: 2px;
+    }
+    .legend {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      font-size: 12px; color: var(--text-muted);
+    }
+    .legend .item {
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .legend .swatch {
+      width: 10px; height: 10px; border-radius: 3px;
+    }
+    .chart-area { width: 100%; height: 220px; }
+
+    .donut-wrap {
+      display: flex; align-items: center; gap: 18px;
+      padding-top: 4px;
+    }
+    .donut-wrap svg { flex-shrink: 0; }
+    .donut-center {
+      position: absolute;
+      inset: 0;
+      display: grid; place-items: center;
+      pointer-events: none;
+    }
+    .donut-center-inner {
+      text-align: center;
+    }
+    .donut-center-inner .v { font-size: 24px; font-weight: 700; }
+    .donut-center-inner .l { font-size: 11px; color: var(--text-muted); }
+    .donut-box { position: relative; width: 160px; height: 160px; }
+    .donut-legend {
+      display: flex; flex-direction: column; gap: 8px;
+      font-size: 13px; flex: 1;
+    }
+    .donut-legend .row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+    }
+    .donut-legend .left {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: var(--text);
+    }
+    .donut-legend .right { color: var(--text-muted); font-weight: 600; }
+    .donut-legend .swatch {
+      width: 10px; height: 10px; border-radius: 3px;
+    }
+
+    /* ---------- Ticket panel ---------- */
+    .panel.list {
+      padding: 0;
+      overflow: hidden;
+    }
+    .list-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .list-header h2 { font-size: 14px; font-weight: 700; }
+    .list-header .count { font-size: 12px; color: var(--text-muted); }
+    .filters { display: flex; gap: 8px; }
+    .chip {
+      padding: 6px 12px;
+      font-size: 12.5px; font-weight: 600;
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .chip:hover { background: var(--hover); color: var(--text); }
+    .chip.active {
+      background: var(--primary-soft);
+      color: var(--primary-strong);
+      border-color: var(--primary-soft);
+    }
+    .ticket-list { list-style: none; }
+    .ticket {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px 24px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .ticket:hover { background: var(--hover); }
+    .ticket:last-child { border-bottom: none; }
+    .ticket .number {
+      font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--primary);
+      letter-spacing: 0.02em;
+    }
+    .ticket .title {
+      font-size: 14.5px; font-weight: 600; margin-top: 2px;
+    }
+    .ticket .meta {
+      font-size: 12.5px; color: var(--text-muted);
+      margin-top: 6px;
+      display: flex; flex-wrap: wrap;
+      gap: 4px 12px;
+    }
+    .ticket .meta .sep { color: var(--text-subtle); }
+    .ticket .meta strong { color: var(--text); font-weight: 600; }
+    .thumbs {
+      grid-column: 1 / -1;
+      display: flex; flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .thumb {
+      width: 56px; height: 56px;
+      border-radius: 8px;
+      background: #F1F3F5 center/cover no-repeat;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    .thumb:hover { transform: scale(1.04); }
+    .thumb.video {
+      display: grid; place-items: center;
+      font-size: 20px; color: var(--text-muted);
+    }
+    .badges {
+      display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    }
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11.5px; font-weight: 600;
+      white-space: nowrap;
+      letter-spacing: 0.01em;
+    }
+    .badge-status-open { background: var(--warning-soft); color: #8A5A00; }
+    .badge-status-progress { background: var(--primary-soft); color: var(--primary-strong); }
+    .badge-status-resolved { background: var(--success-soft); color: #1A6A4C; }
+    .badge-status-closed { background: #ECEEF1; color: #4A5663; }
+    .badge-queue { background: var(--accent-soft); color: #4A2EA6; }
+    .badge-tag { background: #EEF6FF; color: #134DA8; font-family: ui-monospace, monospace; }
+    .empty {
+      padding: 56px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13.5px;
+    }
+
+    /* ---------- Drawer ---------- */
+    .drawer-overlay {
+      position: fixed; inset: 0;
+      background: rgba(28, 43, 58, 0.42);
+      display: none;
+      z-index: 100;
+    }
+    .drawer-overlay.open { display: block; }
+    .drawer {
+      position: fixed;
+      top: 0; right: 0; bottom: 0;
+      width: 100%; max-width: 560px;
+      background: var(--surface);
+      box-shadow: -12px 0 36px rgba(28, 43, 58, 0.14);
+      transform: translateX(100%);
+      transition: transform 0.24s ease;
+      z-index: 110;
+      display: flex; flex-direction: column;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: flex-start;
+    }
+    .drawer-header h2 { font-size: 17px; font-weight: 700; }
+    .drawer-header .num {
+      font-family: ui-monospace, monospace;
+      color: var(--primary);
+      font-size: 12.5px;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .drawer-close {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 22px;
+      color: var(--text-muted);
+      padding: 0 4px;
+      line-height: 1;
+    }
+    .drawer-body {
+      padding: 22px 24px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .section { margin-bottom: 22px; }
+    .section h3 {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-subtle);
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    .field-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 10px 16px;
+    }
+    .field { font-size: 14px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 3px;
+    }
+    .text-block {
+      background: var(--hover);
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      white-space: pre-wrap;
+      border: 1px solid var(--border);
+    }
+    .chat-history {
+      background: var(--hover);
+      padding: 12px;
+      border-radius: 8px;
+      font: 12px/1.55 ui-monospace, monospace;
+      white-space: pre-wrap;
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+    }
+    .steps {
+      background: #FFF8EC;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      white-space: pre-wrap;
+      border: 1px solid #F7E2B5;
+    }
+    .attach-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+      gap: 8px;
+    }
+    .attach-card {
+      background: #F1F3F5;
+      border-radius: 10px;
+      aspect-ratio: 1;
+      background-size: cover;
+      background-position: center;
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+    .attach-card.video {
+      display: grid; place-items: center;
+      font-size: 26px;
+      color: var(--text-muted);
+    }
+    .lightbox {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      align-items: center; justify-content: center;
+      z-index: 200;
+      padding: 32px;
+      cursor: zoom-out;
+    }
+    .lightbox.open { display: flex; }
+    .lightbox img, .lightbox video {
+      max-width: 100%; max-height: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      border-radius: 8px;
+    }
+
+    @media (max-width: 1100px) {
+      .kpis { grid-template-columns: repeat(3, 1fr); }
+      .chart-row { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+      .topbar, .content { padding-left: 16px; padding-right: 16px; }
+      .search input { width: 160px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">S</div>
+        <div>
+          <div class="name">Sukabantu</div>
+          <div class="tag">CS Insights v1.1</div>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-title">Utama</div>
+        <div class="nav-item active" data-view="overview">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+          </span>
+          Dashboard
+        </div>
+        <div class="nav-item" data-view="tickets">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10V8a2 2 0 0 0-2-2h-3a2 2 0 0 1-2-2V2H7a2 2 0 0 0-2 2v4"/><rect x="3" y="10" width="18" height="11" rx="2"/><path d="M9 14h6"/></svg>
+          </span>
+          Tiket
+        </div>
+        <div class="nav-item" data-view="queues">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </span>
+          Antrian
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-title">Analitik</div>
+        <div class="nav-item" data-view="insights">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/></svg>
+          </span>
+          Laporan
+        </div>
+        <div class="nav-item" data-view="csat">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15 9 22 9.5 17 14.5 18.5 22 12 18 5.5 22 7 14.5 2 9.5 9 9 12 2"/></svg>
+          </span>
+          CSAT
+        </div>
+      </div>
+
+      <div class="nav-section" style="margin-top: auto;">
+        <div class="nav-title">Sistem</div>
+        <div class="nav-item" data-view="settings">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </span>
+          Pengaturan
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===== Main ===== -->
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1>Sukabantu Insights</h1>
+          <div class="subtitle">Pemantauan tiket dukungan ESB Order</div>
+        </div>
+        <div class="top-tools">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="search" type="text" placeholder="Cari nomor tiket, nama, kategori..." />
+          </div>
+          <button class="pill-btn" id="refresh-btn" title="Muat ulang">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Muat ulang
+          </button>
+        </div>
+      </header>
+
+      <div class="content">
+        <!-- KPI row -->
+        <section class="kpis" id="kpis"></section>
+
+        <!-- Chart row -->
+        <section class="chart-row">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Volume Tiket — 14 Hari Terakhir</h2>
+                <div class="sub">Tiket baru per hari berdasarkan tanggal pembuatan</div>
+              </div>
+              <div class="legend">
+                <div class="item"><span class="swatch" style="background:var(--primary)"></span>Tiket baru</div>
+              </div>
+            </div>
+            <div class="chart-area" id="line-chart"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Distribusi Status</h2>
+                <div class="sub">Komposisi tiket aktif saat ini</div>
+              </div>
+            </div>
+            <div class="donut-wrap" id="donut-wrap"></div>
+          </div>
+        </section>
+
+        <!-- Ticket list -->
+        <section class="panel list">
+          <div class="list-header">
+            <div>
+              <h2>Daftar Tiket</h2>
+              <div class="count" id="count"></div>
+            </div>
+            <div class="filters" id="filters">
+              <button class="chip active" data-status="">Semua</button>
+              <button class="chip" data-status="Open">Terbuka</button>
+              <button class="chip" data-status="In Progress">Dikerjakan</button>
+              <button class="chip" data-status="Resolved">Selesai</button>
+              <button class="chip" data-status="Closed">Ditutup</button>
+            </div>
+          </div>
+          <ul class="ticket-list" id="ticket-list"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail drawer -->
+  <div class="drawer-overlay" id="drawer-overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <div class="num" id="drawer-num"></div>
+        <h2 id="drawer-title">—</h2>
+      </div>
+      <button class="drawer-close" id="drawer-close" aria-label="Tutup">&times;</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox"></div>
+
+  <script>
+    // ----- Constants -----
+    const STATUS_LABEL = {
+      "Open": "Terbuka",
+      "In Progress": "Dikerjakan",
+      "Resolved": "Selesai",
+      "Closed": "Ditutup",
+    };
+    const STATUS_CLASS = {
+      "Open": "badge-status-open",
+      "In Progress": "badge-status-progress",
+      "Resolved": "badge-status-resolved",
+      "Closed": "badge-status-closed",
+    };
+    const STATUS_COLOR = {
+      "Open": "#F1A325",
+      "In Progress": "#1286E1",
+      "Resolved": "#2BA77A",
+      "Closed": "#9AA5B1",
+    };
+
+    // ----- Helpers -----
+    function fmtTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts);
+      return d.toLocaleString("id-ID", {
+        day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    }
+    function fmtDay(d) {
+      return d.toLocaleDateString("id-ID", { day: "2-digit", month: "short" });
+    }
+    function escapeHtml(s) {
+      return (s == null ? "" : String(s))
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    function statusBadge(status) {
+      const label = STATUS_LABEL[status] || status || "—";
+      const cls = STATUS_CLASS[status] || "badge-status-open";
+      return `<span class="badge ${cls}">${escapeHtml(label)}</span>`;
+    }
+
+    // ----- KPI cards -----
+    function renderKpis(tickets) {
+      const open = tickets.filter(t => t.status === "Open" || t.status === "In Progress").length;
+      const resolved = tickets.filter(t => t.status === "Resolved").length;
+      const totalAttach = tickets.reduce((s, t) => s + ((t.attachments || []).length), 0);
+      const queues = new Set(tickets.map(t => t.routed_queue).filter(Boolean));
+      const today = new Date(); today.setHours(0,0,0,0);
+      const todayCount = tickets.filter(t => {
+        if (!t.created_at) return false;
+        const d = new Date(t.created_at);
+        return d >= today;
+      }).length;
+
+      const cards = [
+        { label: "Total Tiket", value: tickets.length, cls: "", hint: `${todayCount} masuk hari ini` },
+        { label: "Tiket Aktif", value: open, cls: "kpi-open", hint: "Open + Dikerjakan" },
+        { label: "Tiket Selesai", value: resolved, cls: "kpi-resolved", hint: "Status Resolved" },
+        { label: "Antrian Aktif", value: queues.size, cls: "kpi-queue", hint: "Tim support unik" },
+        { label: "Lampiran", value: totalAttach, cls: "kpi-attach", hint: "Foto + video diterima" },
+      ];
+      document.getElementById("kpis").innerHTML = cards.map(c => `
+        <div class="kpi ${c.cls}">
+          <div class="label"><span class="dot"></span>${c.label}</div>
+          <div class="value">${c.value}</div>
+          <div class="hint">${c.hint}</div>
+        </div>
+      `).join("");
+    }
+
+    // ----- Line chart (SVG, no deps) -----
+    function renderLineChart(tickets) {
+      const days = 14;
+      const today = new Date(); today.setHours(0,0,0,0);
+      const buckets = [];
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(today); d.setDate(today.getDate() - i);
+        buckets.push({ date: d, count: 0 });
+      }
+      const idxOf = (d) => {
+        const day0 = new Date(d); day0.setHours(0,0,0,0);
+        const diff = Math.round((today - day0) / 86400000);
+        return days - 1 - diff;
+      };
+      tickets.forEach(t => {
+        if (!t.created_at) return;
+        const i = idxOf(new Date(t.created_at));
+        if (i >= 0 && i < days) buckets[i].count++;
+      });
+
+      const W = 720, H = 220, padL = 36, padR = 16, padT = 16, padB = 32;
+      const maxY = Math.max(4, ...buckets.map(b => b.count));
+      const niceMax = Math.ceil(maxY / 2) * 2;
+      const x = (i) => padL + (i * (W - padL - padR)) / (days - 1);
+      const y = (v) => padT + (H - padT - padB) * (1 - v / niceMax);
+
+      const path = buckets.map((b, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(b.count)}`).join(" ");
+      const area = `M ${x(0)} ${y(0)} ` +
+        buckets.map((b, i) => `L ${x(i)} ${y(b.count)}`).join(" ") +
+        ` L ${x(days - 1)} ${y(0)} Z`;
+
+      const gridLines = [];
+      for (let k = 0; k <= 4; k++) {
+        const v = (niceMax / 4) * k;
+        const yy = y(v);
+        gridLines.push(`<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="#EEF1F4" stroke-width="1"/>`);
+        gridLines.push(`<text x="${padL - 8}" y="${yy + 3}" text-anchor="end" font-size="10" fill="#95A1AE">${Math.round(v)}</text>`);
+      }
+
+      const xLabels = buckets.map((b, i) => {
+        if (i % 2 !== 0 && i !== days - 1) return "";
+        return `<text x="${x(i)}" y="${H - 10}" text-anchor="middle" font-size="10" fill="#95A1AE">${fmtDay(b.date)}</text>`;
+      }).join("");
+
+      const points = buckets.map((b, i) =>
+        `<circle cx="${x(i)}" cy="${y(b.count)}" r="3" fill="#fff" stroke="#1286E1" stroke-width="2"><title>${fmtDay(b.date)}: ${b.count} tiket</title></circle>`
+      ).join("");
+
+      const svg = `
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:100%">
+          <defs>
+            <linearGradient id="lineFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#1286E1" stop-opacity="0.20"/>
+              <stop offset="100%" stop-color="#1286E1" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          ${gridLines.join("")}
+          <path d="${area}" fill="url(#lineFill)"/>
+          <path d="${path}" fill="none" stroke="#1286E1" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          ${points}
+          ${xLabels}
+        </svg>
+      `;
+      document.getElementById("line-chart").innerHTML = svg;
+    }
+
+    // ----- Donut chart -----
+    function renderDonut(tickets) {
+      const order = ["Open", "In Progress", "Resolved", "Closed"];
+      const counts = Object.fromEntries(order.map(s => [s, 0]));
+      tickets.forEach(t => {
+        if (counts[t.status] != null) counts[t.status]++;
+      });
+      const total = tickets.length;
+      const segments = order
+        .map(s => ({ status: s, value: counts[s] }))
+        .filter(s => s.value > 0);
+
+      const SIZE = 160, R = 64, STROKE = 18, CX = SIZE / 2, CY = SIZE / 2;
+      const C = 2 * Math.PI * R;
+
+      let acc = 0;
+      const arcs = segments.map(seg => {
+        const frac = total > 0 ? seg.value / total : 0;
+        const len = frac * C;
+        const arc = `
+          <circle cx="${CX}" cy="${CY}" r="${R}"
+            fill="none"
+            stroke="${STATUS_COLOR[seg.status]}"
+            stroke-width="${STROKE}"
+            stroke-dasharray="${len} ${C - len}"
+            stroke-dashoffset="${-acc}"
+            transform="rotate(-90 ${CX} ${CY})"
+            stroke-linecap="butt"/>
+        `;
+        acc += len;
+        return arc;
+      }).join("");
+
+      const svg = `
+        <div class="donut-box">
+          <svg viewBox="0 0 ${SIZE} ${SIZE}" width="${SIZE}" height="${SIZE}">
+            <circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="#F1F3F5" stroke-width="${STROKE}"/>
+            ${arcs}
+          </svg>
+          <div class="donut-center">
+            <div class="donut-center-inner">
+              <div class="v">${total}</div>
+              <div class="l">Total tiket</div>
+            </div>
+          </div>
+        </div>
+        <div class="donut-legend">
+          ${order.map(s => `
+            <div class="row">
+              <span class="left">
+                <span class="swatch" style="background:${STATUS_COLOR[s]}"></span>
+                ${STATUS_LABEL[s]}
+              </span>
+              <span class="right">${counts[s]}${total > 0 ? ` <span style="color:var(--text-subtle);font-weight:500">· ${Math.round(counts[s] / total * 100)}%</span>` : ""}</span>
+            </div>
+          `).join("")}
+        </div>
+      `;
+      document.getElementById("donut-wrap").innerHTML = svg;
+    }
+
+    // ----- Ticket list -----
+    let activeStatusFilter = "";
+    function renderList(tickets, filter = "") {
+      const filtered = tickets.filter(t => {
+        if (activeStatusFilter && t.status !== activeStatusFilter) return false;
+        if (!filter) return true;
+        const f = filter.toLowerCase();
+        return [t.ticket_number, t.name, t.issue_category, t.sub_topic, t.routed_queue, t.issue_detail, t.company_name]
+          .some(v => (v || "").toLowerCase().includes(f));
+      });
+      document.getElementById("count").textContent = `${filtered.length} tiket ditampilkan`;
+
+      const list = document.getElementById("ticket-list");
+      if (filtered.length === 0) {
+        list.innerHTML = `<li class="empty">Belum ada tiket yang cocok.</li>`;
+        return;
+      }
+      list.innerHTML = filtered.map(t => {
+        const tagBadge = t.sub_topic ? `<span class="badge badge-tag">${escapeHtml(t.sub_topic)}</span>` : "";
+        const queueBadge = t.routed_queue ? `<span class="badge badge-queue">${escapeHtml(t.routed_queue)}</span>` : "";
+        const thumbs = (t.attachments || []).slice(0, 4).map(a => {
+          if (a.kind === "video") {
+            return `<div class="thumb video" data-fid="${escapeHtml(a.file_id)}" data-kind="video">▶</div>`;
+          }
+          return `<div class="thumb" style="background-image:url('/api/attachments/${encodeURIComponent(a.file_id)}')" data-fid="${escapeHtml(a.file_id)}"></div>`;
+        }).join("");
+        return `
+          <li class="ticket" data-id="${t.id}">
+            <div>
+              <div class="number">${escapeHtml(t.ticket_number)}</div>
+              <div class="title">${escapeHtml(t.issue_category || "Tanpa Kategori")}</div>
+              <div class="meta">
+                <strong>${escapeHtml(t.name || "Tanpa Nama")}</strong>
+                <span class="sep">•</span>
+                <span>${escapeHtml(t.company_name || "—")}${t.branch_name ? " / " + escapeHtml(t.branch_name) : ""}</span>
+                <span class="sep">•</span>
+                <span>${fmtTime(t.created_at)}</span>
+                <span class="sep">•</span>
+                <span>${escapeHtml(t.phone_number || "—")}</span>
+              </div>
+              ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ""}
+            </div>
+            <div class="badges">
+              ${statusBadge(t.status)}
+              ${queueBadge}
+              ${tagBadge}
+            </div>
+          </li>
+        `;
+      }).join("");
+
+      // Wire ticket clicks
+      list.querySelectorAll(".ticket").forEach(el => {
+        el.addEventListener("click", e => {
+          if (e.target.classList.contains("thumb")) {
+            e.stopPropagation();
+            openLightbox(e.target.dataset.fid, e.target.dataset.kind);
+            return;
+          }
+          const t = (window.__tickets || []).find(x => String(x.id) === el.dataset.id);
+          if (t) openDrawer(t);
+        });
+      });
+    }
+
+    // ----- Drawer -----
+    function openDrawer(t) {
+      document.getElementById("drawer-num").textContent = t.ticket_number;
+      document.getElementById("drawer-title").textContent = t.issue_category || "Tiket Support";
+      const attachHtml = (t.attachments || []).map(a => {
+        if (a.kind === "video") {
+          return `<div class="attach-card video" data-fid="${escapeHtml(a.file_id)}" data-kind="video">▶</div>`;
+        }
+        return `<div class="attach-card" style="background-image:url('/api/attachments/${encodeURIComponent(a.file_id)}')" data-fid="${escapeHtml(a.file_id)}"></div>`;
+      }).join("") || `<div style="color:var(--text-muted);font-size:13px">Tidak ada lampiran.</div>`;
+
+      document.getElementById("drawer-body").innerHTML = `
+        <div class="section">
+          <h3>Status & Antrian</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${statusBadge(t.status)}
+            ${t.routed_queue ? `<span class="badge badge-queue">${escapeHtml(t.routed_queue)}</span>` : ""}
+            ${t.sub_topic ? `<span class="badge badge-tag">${escapeHtml(t.sub_topic)}</span>` : ""}
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Informasi Merchant</h3>
+          <div class="field-grid">
+            <div class="field"><label>Nama</label>${escapeHtml(t.name || "—")}</div>
+            <div class="field"><label>No. HP</label>${escapeHtml(t.phone_number || "—")}</div>
+            <div class="field"><label>Perusahaan</label>${escapeHtml(t.company_name || "—")}</div>
+            <div class="field"><label>Cabang</label>${escapeHtml(t.branch_name || "—")}</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>Detail Kendala</h3>
+          <div class="text-block">${escapeHtml(t.issue_detail || "—")}</div>
+        </div>
+
+        <div class="section">
+          <h3>Lampiran (${(t.attachments || []).length})</h3>
+          <div class="attach-grid">${attachHtml}</div>
+        </div>
+
+        ${t.steps_attempted ? `
+        <div class="section">
+          <h3>Langkah yang Sudah Dicoba</h3>
+          <div class="steps">${escapeHtml(t.steps_attempted)}</div>
+        </div>` : ""}
+
+        ${t.chat_history ? `
+        <div class="section">
+          <h3>Riwayat Percakapan</h3>
+          <div class="chat-history">${escapeHtml(t.chat_history)}</div>
+        </div>` : ""}
+
+        <div class="section">
+          <h3>Metadata</h3>
+          <div class="field-grid">
+            <div class="field"><label>Dibuat</label>${fmtTime(t.created_at)}</div>
+            <div class="field"><label>Confidence AI</label>${t.confidence_score != null ? t.confidence_score + "%" : "—"}</div>
+            <div class="field"><label>Chat ID</label>${escapeHtml(t.chat_id || "—")}</div>
+          </div>
+        </div>
+      `;
+      document.getElementById("drawer").classList.add("open");
+      document.getElementById("drawer-overlay").classList.add("open");
+
+      document.querySelectorAll("#drawer-body .attach-card").forEach(el => {
+        el.addEventListener("click", e => {
+          e.stopPropagation();
+          openLightbox(el.dataset.fid, el.dataset.kind);
+        });
+      });
+    }
+    function closeDrawer() {
+      document.getElementById("drawer").classList.remove("open");
+      document.getElementById("drawer-overlay").classList.remove("open");
+    }
+
+    // ----- Lightbox -----
+    function openLightbox(fileId, kind) {
+      const box = document.getElementById("lightbox");
+      const url = "/api/attachments/" + encodeURIComponent(fileId);
+      if (kind === "video") {
+        box.innerHTML = `<video src="${url}" controls autoplay></video>`;
+      } else {
+        box.innerHTML = `<img src="${url}" alt="Lampiran tiket" />`;
+      }
+      box.classList.add("open");
+    }
+    function closeLightbox() {
+      const box = document.getElementById("lightbox");
+      box.classList.remove("open");
+      box.innerHTML = "";
+    }
+
+    // ----- Load + wire -----
+    async function load() {
+      try {
+        const r = await fetch("/api/tickets?limit=500");
+        const tickets = await r.json();
+        tickets.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        window.__tickets = tickets;
+        renderKpis(tickets);
+        renderLineChart(tickets);
+        renderDonut(tickets);
+        renderList(tickets, document.getElementById("search").value || "");
+      } catch (err) {
+        document.getElementById("ticket-list").innerHTML =
+          `<li class="empty">Gagal memuat data: ${escapeHtml(err.message)}</li>`;
+      }
+    }
+
+    document.getElementById("search").addEventListener("input", e => {
+      renderList(window.__tickets || [], e.target.value);
+    });
+    document.getElementById("filters").addEventListener("click", e => {
+      const chip = e.target.closest(".chip");
+      if (!chip) return;
+      document.querySelectorAll("#filters .chip").forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      activeStatusFilter = chip.dataset.status || "";
+      renderList(window.__tickets || [], document.getElementById("search").value || "");
+    });
+    document.getElementById("refresh-btn").addEventListener("click", load);
+    document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+    document.getElementById("drawer-overlay").addEventListener("click", closeDrawer);
+    document.getElementById("lightbox").addEventListener("click", closeLightbox);
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape") { closeLightbox(); closeDrawer(); }
+    });
+
+    // Sidebar nav (visual only — single page for now)
+    document.querySelectorAll(".nav-item").forEach(item => {
+      item.addEventListener("click", () => {
+        document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
+        item.classList.add("active");
+      });
+    });
+
+    load();
+    setInterval(load, 30000);
+  </script>
+</body>
+</html>

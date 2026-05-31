@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+sqlalchemy
+python-telegram-bot
+langchain
+langchain-google-vertexai
+langchain-google-genai
+langchain-google-community
+google-cloud-storage
+google-cloud-discoveryengine
+openpyxl
+pydantic
+httpx
+psycopg2-binary
+faiss-cpu
+langchain-community
+python-dotenv

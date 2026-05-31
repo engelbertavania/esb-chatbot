@@ -1,0 +1,37 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Dev / test
+smoke_test.py
+extract_*.py
+patch_*.py
+verify_*.py
+tickets.db
+
+# Source data (we ship the pre-built JSONL instead)
+Ticket_Order_Test_Q1_2026_Categorized_v2.xlsx
+~$*.xlsx
+bundle_code.js
+
+# Docs / PRD (not needed at runtime)
+*.md
+*.docx
+prd_text.txt
+
+# Frontend lives in its own deploy target (Vercel)
+frontend/
+
+# Tooling
+.claude/
+.git/
+.gitignore
+.env
+.env.local
+
+# Container build artifacts
+Dockerfile
+.dockerignore

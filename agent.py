@@ -1,0 +1,861 @@
+"""Agent for the ESB Order Phase-1 support chatbot.
+
+Implements the conversation state machine required by PRD HACKATOWNJUARA001
+Phase 1 — Foundation. Key behaviours:
+
+* US1 (issue identification) — classify into one of 10 MVP categories with a
+  70% confidence floor (AC1.9); offer 2-3 candidate categories when below the
+  floor (AC1.9.1); reject out-of-scope queries (AC1.11).
+* US2 (guided troubleshooting) — present steps SEQUENTIALLY, one at a time,
+  with Yes/No after each (AC2.1, AC2.2). Stop after 3 consecutive No
+  responses (AC2.3) and offer escalation.
+* US4 (self-service ticket creation) — collect Name/Phone/Company/Branch via
+  multi-turn prompts (manual fields), auto-fill Issue Category and Issue
+  Detail, attach read-only Chat History / Steps Attempted / Attachments,
+  generate ticket number in PRD format ``Ticket #YY######``, route to the
+  correct support queue (AC4.4).
+* 30-minute idle session timeout (AC1.14) with auto-closing message.
+"""
+import config  # noqa: F401 — loads .env before any os.getenv reads
+
+from langchain_google_vertexai import ChatVertexAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
+
+import logging
+import os
+import random
+import re
+import time
+from datetime import datetime
+from functools import lru_cache
+from typing import Optional
+
+from rag import retrieve_troubleshooting
+from content_architecture import (
+    match_ca,
+    format_response,
+    entries_in_category,
+    find_by_predefined,
+    MODEL_NAME,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# PRD Phase-1 taxonomy — the 10 MVP issue categories
+# ---------------------------------------------------------------------------
+# Verbatim from PRD US1 "MVP Issue Categories". Order matters only for the
+# low-confidence suggestion UI; the classifier must pick exactly one.
+MVP_CATEGORIES: list[str] = [
+    "ESO Activation / Deactivation",
+    "Order Issues",
+    "Payment Gateway Setup",
+    "Menu Image Upload",
+    "Menu Issues",
+    "Banner Image Upload",
+    "ESO Merchant Issues",
+    "Payment & QR Issues",
+    "Guiding Configuration",
+    "Push to POS Issues",
+]
+
+# Routing matrix (PRD AC4.4). Each MVP category maps to a downstream queue.
+ROUTING_MATRIX: dict[str, str] = {
+    "ESO Activation / Deactivation": "ESO Ops",
+    "Order Issues": "Order Ops",
+    "Payment Gateway Setup": "Payment Ops",
+    "Menu Image Upload": "Menu Ops",
+    "Menu Issues": "Menu Ops",
+    "Banner Image Upload": "Menu Ops",
+    "ESO Merchant Issues": "ESO Ops",
+    "Payment & QR Issues": "Payment Ops",
+    "Guiding Configuration": "Onboarding Ops",
+    "Push to POS Issues": "Integration Ops",
+}
+
+SENTINEL_TOPICS = ("Out of Scope", "Low Confidence")
+CONFIDENCE_THRESHOLD = 70           # AC1.9
+SESSION_TIMEOUT_SECONDS = 30 * 60   # AC1.14 — 30 minutes
+MAX_UNRESOLVED_ATTEMPTS = 3         # AC2.3
+LOW_CONF_SUGGESTION_COUNT = 3       # AC1.9.1 — "2-3 suggested categories"
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+
+class Classification(BaseModel):
+    """Structured output for merchant-issue classification."""
+    category: str = Field(
+        description=(
+            "Salah satu kategori dari daftar resmi PRD, atau 'Out of Scope' jika "
+            "pertanyaan tidak berkaitan dengan operasional ESB Order, atau "
+            "'Low Confidence' jika Anda tidak yakin."
+        ),
+    )
+    confidence: int = Field(
+        ge=0, le=100,
+        description="Tingkat keyakinan klasifikasi, dari 0 sampai 100.",
+    )
+    candidates: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Jika confidence rendah, daftar 2-3 kategori paling mungkin dari "
+            "daftar resmi (urutan paling mungkin dulu)."
+        ),
+    )
+
+
+def _format_categories() -> str:
+    return "\n".join(f"- {c}" for c in MVP_CATEGORIES)
+
+
+_SYSTEM_PROMPT = (
+    "Anda adalah asisten Level-1 Support untuk ESB Order (platform pemesanan "
+    "untuk merchant F&B di Indonesia). Tugas Anda mengklasifikasikan keluhan "
+    "merchant ke dalam SATU kategori dari 10 kategori resmi berikut:\n\n"
+    "{categories}\n\n"
+    "Aturan:\n"
+    "1. Jika pertanyaan tidak berkaitan dengan operasional produk ESB Order "
+    "(contoh: 'Berapa banyak merchant ESB?', 'Siapa CTO ESB?'), gunakan "
+    "category='Out of Scope', confidence=0, candidates=[].\n"
+    "2. Jika Anda kurang yakin (confidence < 70), TETAP isi 'category' dengan "
+    "tebakan terbaik tapi juga sediakan 2-3 nama kategori paling mungkin di "
+    "'candidates'. Sistem akan menawarkan ini kepada merchant untuk dipilih.\n"
+    "3. Nama kategori HARUS PERSIS sama dengan daftar di atas (termasuk kapital "
+    "dan spasi). Jangan menerjemahkan, jangan menyingkat.\n"
+    "4. Pesan merchant biasanya dalam Bahasa Indonesia. Pahami istilah seperti "
+    "'kendala', 'aktifasi', 'push to POS', 'QRIS', 'MDR', 'banner', 'menu', "
+    "'foto', 'comcode', 'ESO'."
+)
+_USER_PROMPT = "Keluhan merchant:\n{user_input}"
+
+_classifier_prompt = ChatPromptTemplate.from_messages(
+    [("system", _SYSTEM_PROMPT), ("user", _USER_PROMPT)]
+).partial(categories=_format_categories())
+
+
+def _build_classifier():
+    """Build the LLM-backed classifier. See module docstring for selection rules."""
+    prefer_vertex = os.getenv("PREFER_VERTEX_AI", "").lower() in ("1", "true", "yes")
+    has_vertex = bool(os.getenv("GOOGLE_CLOUD_PROJECT"))
+    has_gemini_api = bool(os.getenv("GOOGLE_API_KEY"))
+
+    use_vertex = has_vertex and (prefer_vertex or not has_gemini_api)
+
+    if use_vertex:
+        llm = ChatVertexAI(
+            model_name="gemini-2.5-flash",
+            temperature=0.0,
+            project=os.environ["GOOGLE_CLOUD_PROJECT"],
+            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+        )
+        structured = llm.with_structured_output(Classification)
+        logger.info("Classifier: ChatVertexAI (project=%s).",
+                    os.environ["GOOGLE_CLOUD_PROJECT"])
+        return _classifier_prompt | structured, llm
+
+    if has_gemini_api:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+        structured = llm.with_structured_output(Classification)
+        logger.info("Classifier: ChatGoogleGenerativeAI.")
+        return _classifier_prompt | structured, llm
+
+    raise RuntimeError(
+        "No LLM credentials. Set GOOGLE_CLOUD_PROJECT (Vertex) or GOOGLE_API_KEY."
+    )
+
+
+_classifier, llm = _build_classifier()
+
+
+def classify_intent(user_input: str) -> dict:
+    """Classify a merchant message into one of the 10 MVP categories.
+
+    Returns::
+
+        {
+          "category": "<one of MVP_CATEGORIES | 'Out of Scope' | 'Low Confidence'>",
+          "confidence": <int 0..100>,
+          "candidates": [<2-3 MVP category names>],   # populated when confidence < 70
+        }
+    """
+    try:
+        result: Classification = _classifier.invoke({"user_input": user_input})
+    except Exception as e:
+        logger.error("Classifier error: %s", e)
+        return {"category": "Low Confidence", "confidence": 0, "candidates": []}
+
+    category = result.category
+    confidence = int(result.confidence)
+    candidates = [c for c in result.candidates if c in MVP_CATEGORIES][:LOW_CONF_SUGGESTION_COUNT]
+
+    if category == "Out of Scope":
+        return {"category": "Out of Scope", "confidence": confidence, "candidates": []}
+
+    # Demote unknown categories to Low Confidence.
+    if category not in MVP_CATEGORIES:
+        category = "Low Confidence"
+
+    # Apply AC1.9 — confidence floor.
+    if category != "Low Confidence" and confidence < CONFIDENCE_THRESHOLD:
+        if not candidates:
+            candidates = [category]  # at least the model's best guess
+        category = "Low Confidence"
+
+    return {"category": category, "confidence": confidence, "candidates": candidates}
+
+
+# ---------------------------------------------------------------------------
+# Step synthesizer — produce N sequential troubleshooting steps from RAG docs
+# ---------------------------------------------------------------------------
+
+class TroubleshootingPlan(BaseModel):
+    steps: list[str] = Field(
+        description=(
+            "3-5 langkah troubleshooting sekuensial dalam Bahasa Indonesia. "
+            "Setiap langkah satu kalimat actionable yang bisa dikerjakan "
+            "merchant secara langsung. Sebutkan path menu konkret bila relevan "
+            "(contoh: 'Master > Menu > Foto Menu')."
+        ),
+    )
+
+
+_PLAN_SYSTEM_PROMPT = (
+    "Anda adalah agen Level-1 Support untuk ESB Order. Susun 3-5 langkah "
+    "troubleshooting SEKUENSIAL untuk masalah merchant berikut. Gunakan "
+    "konteks tiket internal sebagai referensi utama; jika tiket terlalu "
+    "singkat (contoh: 'Done', 'Master > Menu'), lengkapi sendiri menjadi "
+    "langkah konkrit berdasarkan praktik standar ESB Order.\n\n"
+    "Aturan:\n"
+    "1. Setiap langkah satu kalimat, dimulai dengan kata kerja imperatif "
+    "(Buka, Pilih, Tekan, Pastikan, Coba, dst).\n"
+    "2. Urutkan dari yang paling mudah ke yang paling teknis.\n"
+    "3. Sebutkan menu/path konkret (contoh: 'Master > Menu > Foto Menu').\n"
+    "4. JANGAN sebut 'tiket internal', 'database', atau frase yang membuka "
+    "informasi internal.\n"
+    "5. Bahasa Indonesia formal namun ramah.\n"
+    "6. Jangan mengulang langkah yang sama."
+)
+_PLAN_USER_PROMPT = (
+    "Kategori: {category}\n"
+    "Pertanyaan merchant: {query}\n\n"
+    "Konteks tiket internal yang relevan:\n{context}\n\n"
+    "Susun langkah troubleshooting sekuensial."
+)
+_plan_prompt = ChatPromptTemplate.from_messages(
+    [("system", _PLAN_SYSTEM_PROMPT), ("user", _PLAN_USER_PROMPT)]
+)
+
+
+def _format_context(docs: list[dict]) -> str:
+    if not docs:
+        return "(tidak ada tiket internal yang cocok — gunakan praktik standar ESB Order)"
+    blocks: list[str] = []
+    for i, d in enumerate(docs[:3], start=1):
+        blocks.append(
+            f"[Tiket {i}]\n"
+            f"  Issue:      {d.get('issue', '') or '-'}\n"
+            f"  Root cause: {d.get('root_cause', '') or '-'}\n"
+            f"  Solution:   {d.get('solution', '') or '-'}"
+        )
+    return "\n\n".join(blocks)
+
+
+def _fallback_steps(category: str) -> list[str]:
+    """Deterministic safety net when Gemini fails."""
+    return [
+        f"Pastikan aplikasi ESB Order Anda sudah versi terbaru dan login dengan akun admin.",
+        f"Periksa koneksi internet outlet Anda — pastikan stabil dan dapat membuka aplikasi lain.",
+        f"Coba tutup aplikasi sepenuhnya lalu buka kembali, kemudian ulangi langkah terkait '{category}'.",
+        "Jika masih bermasalah, restart perangkat POS dan coba sekali lagi.",
+    ]
+
+
+def synthesize_steps(query: str, category: str, docs: list[dict]) -> list[str]:
+    """Return a list of 3-5 troubleshooting steps for the merchant's issue."""
+    try:
+        chain = _plan_prompt | llm.with_structured_output(TroubleshootingPlan)
+        plan: TroubleshootingPlan = chain.invoke({
+            "category": category or "-",
+            "query": query,
+            "context": _format_context(docs),
+        })
+        steps = [s.strip() for s in plan.steps if s and s.strip()]
+        if steps:
+            return steps[:5]
+    except Exception as e:
+        logger.warning("synthesize_steps failed: %s", e)
+    return _fallback_steps(category)
+
+
+# ---------------------------------------------------------------------------
+# Session state machine
+# ---------------------------------------------------------------------------
+
+# In-memory session store. Each session keyed by chat_id.
+#
+# Session shape::
+#
+#     {
+#       "state": str,
+#       "topic": str,                # category from classifier
+#       "original_query": str,       # first merchant message in the issue
+#       "confidence": int,
+#       "solution_steps": list[str], # pre-synthesized sequential steps
+#       "step_index": int,           # 0-based: index of step currently shown
+#       "unresolved_attempts": int,  # increments on 'Tidak'; ≥ 3 → escalate
+#       "docs": list[dict],          # RAG hits used to build solution_steps
+#       "chat_history": list[dict],  # {"role", "text", "ts"} per turn
+#       "attachments": list[dict],   # {file_id, mime, size_bytes}
+#       "ticket_form": dict,         # name, phone, company, branch (manual)
+#       "low_conf_candidates": list[str],
+#       "last_activity": float,      # epoch seconds — AC1.14 timeout source
+#     }
+SESSION_STATE: dict[str, dict] = {}
+
+_AFFIRMATIVE = {"ya", "yes", "iya", "sudah", "ok", "oke", "bisa", "selesai", "teratasi"}
+_NEGATIVE = {"tidak", "no", "belum", "gagal", "ga", "engga", "nggak", "masih"}
+
+# Indonesian phone — accepts +62 / 62 / 0 prefix, 9-13 digits total. AC4.7.
+_PHONE_RE = re.compile(r"^(?:\+?62|0)\d{8,12}$")
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _fresh_session() -> dict:
+    return {
+        "state": "IDLE",
+        "topic": "",
+        "original_query": "",
+        "confidence": 0,
+        "solution_steps": [],
+        "step_index": 0,
+        "unresolved_attempts": 0,
+        "docs": [],
+        "chat_history": [],
+        "attachments": [],
+        "ticket_form": {},
+        "low_conf_candidates": [],
+        "last_activity": _now(),
+    }
+
+
+def _record_turn(session: dict, role: str, text: str) -> None:
+    """Append a turn to chat_history (capped at 200 entries to bound memory)."""
+    history = session.setdefault("chat_history", [])
+    history.append({"role": role, "text": text, "ts": _now()})
+    if len(history) > 200:
+        del history[: len(history) - 200]
+    session["last_activity"] = _now()
+
+
+def _format_ticket_number() -> str:
+    """AC4.3 — Ticket #[YY][6-digit random]. Year 2-digit + 100000–999999."""
+    yy = datetime.now().strftime("%y")
+    rand = random.randint(100000, 999999)
+    return f"Ticket #{yy}{rand}"
+
+
+def render_chat_history(session: dict) -> str:
+    """Plain-text transcript embedded in the generated ticket."""
+    lines: list[str] = []
+    for turn in session.get("chat_history", []):
+        ts = datetime.fromtimestamp(turn.get("ts", 0)).strftime("%H:%M:%S")
+        actor = "Merchant" if turn["role"] == "user" else "Bot"
+        lines.append(f"[{ts}] {actor}: {turn['text']}")
+    return "\n".join(lines)
+
+
+def render_steps_attempted(session: dict) -> str:
+    """Numbered list of steps the bot actually showed to the merchant."""
+    steps = session.get("solution_steps", [])
+    shown = steps[: session.get("step_index", 0) + 1] if steps else []
+    return "\n".join(f"{i+1}. {s}" for i, s in enumerate(shown))
+
+
+# ---------------------------------------------------------------------------
+# Flow handlers
+# ---------------------------------------------------------------------------
+
+def _present_step(session: dict) -> dict:
+    """Return the response for the current step (0-based step_index).
+
+    Two presentation modes:
+
+    * **CA mode** (``source == 'ca'``): each "step" is a full pre-authored
+      response. We show it as-is with a brief prefix when there are
+      alternates.
+    * **Synthesized mode** (``source == 'llm'``): each step is a single
+      action from a Gemini-generated plan. We label them ``Langkah X dari N``.
+    """
+    steps = session["solution_steps"]
+    idx = session["step_index"]
+    step_no = idx + 1
+    total = len(steps)
+    source = session.get("source", "llm")
+
+    if source == "ca":
+        # CA responses are self-contained — no "Langkah X dari N" wrapper.
+        prefix = ""
+        if idx > 0:
+            prefix = "Coba pendekatan lain:\n\n"
+        body = (
+            f"{prefix}{steps[idx]}\n\n"
+            f"Apakah panduan ini menyelesaikan masalah Anda?"
+        )
+    else:
+        body = (
+            f"Langkah {step_no} dari {total}:\n"
+            f"{steps[idx]}\n\n"
+            f"Apakah langkah ini menyelesaikan masalah Anda?"
+        )
+
+    _record_turn(session, "assistant", body)
+    return {"type": "question", "text": body, "options": ["Ya", "Tidak"]}
+
+
+def _start_troubleshooting(session: dict, category: str, query: str, confidence: int) -> dict:
+    """Start a troubleshooting flow.
+
+    Resolution order:
+
+    1. **Content Architecture V.4** — keyword-matched pre-authored responses
+       from the support team. Highest priority because they're hand-reviewed
+       and use ESB's exact terminology.
+    2. **Vertex AI Search + Gemini synthesis** — fallback when no CA entry
+       scores above the keyword threshold.
+    """
+    ca_matches = match_ca(query, category=category, k=3)
+
+    if ca_matches:
+        steps = [format_response(m["response"]) for m in ca_matches]
+        # Tag from the top match drives sub-topic + analytics.
+        top_tag = (ca_matches[0]["tags"] or [""])[0]
+        session.update({
+            "state": "TROUBLESHOOTING",
+            "topic": category,
+            "sub_topic": top_tag,
+            "original_query": query,
+            "confidence": confidence,
+            "solution_steps": steps,
+            "step_index": 0,
+            "unresolved_attempts": 0,
+            "source": "ca",
+            "ca_matches": ca_matches,   # kept for ticket payload
+            "docs": [],
+        })
+        logger.info("CA match (score=%s, %d alternates): %s",
+                    ca_matches[0].get("match_score"), len(ca_matches) - 1,
+                    ca_matches[0]["predefined"])
+        return _present_step(session)
+
+    # Fallback to Gemini synthesis over the RAG corpus.
+    docs = retrieve_troubleshooting(query=query, topic=category, k=3)
+    steps = synthesize_steps(query, category, docs)
+    session.update({
+        "state": "TROUBLESHOOTING",
+        "topic": category,
+        "sub_topic": "",
+        "original_query": query,
+        "confidence": confidence,
+        "solution_steps": steps,
+        "step_index": 0,
+        "unresolved_attempts": 0,
+        "source": "llm",
+        "docs": docs,
+    })
+    return _present_step(session)
+
+
+def _resolved_close(session: dict) -> dict:
+    """AC2.2.1 — mark Resolved and ask for a CSAT rating before closing.
+
+    Session topic/sub_topic/original_query are PRESERVED across this turn so
+    the CSAT handler can persist them when the merchant picks a rating.
+    """
+    text = (
+        "Bagus! Senang masalahnya sudah teratasi.\n\n"
+        "Sebelum sesi ditutup, mohon beri penilaian untuk bantuan saya:\n"
+        "(1 = sangat buruk, 5 = sangat baik)"
+    )
+    session["state"] = "AWAITING_CSAT"
+    _record_turn(session, "assistant", text)
+    return {
+        "type": "question",
+        "text": text,
+        "options": ["1", "2", "3", "4", "5"],
+    }
+
+
+def _persist_csat(chat_id: str, rating: int, session: dict) -> None:
+    """Save a CSAT rating row. Imported lazily to avoid a circular import on
+    module load — database.py imports config, which sometimes pulls agent.py
+    transitively during tests."""
+    from database import SessionLocal, CSATRating
+    db = SessionLocal()
+    try:
+        row = CSATRating(
+            chat_id=chat_id,
+            rating=rating,
+            category=session.get("topic", ""),
+            sub_topic=session.get("sub_topic", ""),
+            original_query=session.get("original_query", ""),
+            resolved_via=session.get("source", ""),
+        )
+        db.add(row)
+        db.commit()
+    except Exception as e:
+        logger.warning("Failed to persist CSAT rating: %s", e)
+    finally:
+        db.close()
+
+
+def _csat_thanks_and_close(session: dict, rating: int) -> dict:
+    """Send the final thank-you and reset flow state to IDLE."""
+    # Keep chat_history for telemetry, drop flow state.
+    session.update({
+        "state": "IDLE",
+        "topic": "",
+        "sub_topic": "",
+        "original_query": "",
+        "solution_steps": [],
+        "step_index": 0,
+        "unresolved_attempts": 0,
+        "docs": [],
+        "low_conf_candidates": [],
+        "predefined_choices": [],
+        "ticket_form": {},
+        "source": "",
+    })
+    text = (
+        f"Terima kasih atas penilaian Anda ({rating}/5)!\n"
+        f"Jika ada kendala lain, silakan langsung kirim pesan ke saya."
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "message", "text": text}
+
+
+def _begin_escalation(session: dict) -> dict:
+    """Kick off the multi-turn ticket form (US4)."""
+    session["state"] = "COLLECTING_NAME"
+    session["ticket_form"] = {}
+    text = (
+        "Saya akan eskalasikan ke tim support. Untuk membuat tiket, mohon "
+        "isi data berikut.\n\nSiapa nama Anda?"
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "message", "text": text}
+
+
+def _ticket_form_step(session: dict, field_msg: tuple[str, str]) -> dict:
+    next_state, prompt = field_msg
+    session["state"] = next_state
+    _record_turn(session, "assistant", prompt)
+    return {"type": "message", "text": prompt}
+
+
+def _finalize_ticket(session: dict) -> dict:
+    """Build the ticket payload after all manual fields are collected."""
+    category = session.get("topic") or "Other"
+    form = session.get("ticket_form", {})
+    ticket_number = _format_ticket_number()
+    queue = ROUTING_MATRIX.get(category, "General Support")
+    confirmation = (
+        f"{ticket_number} sudah dibuat dan akan ditangani oleh tim {queue}.\n"
+        f"Tim kami akan merespons dalam 1-2 jam pada jam operasional "
+        f"(08:00-22:00 WIB)."
+    )
+    payload = {
+        "type": "ticket_form",
+        "text": confirmation,
+        "ticket_number": ticket_number,
+        "category": category,
+        "sub_topic": session.get("sub_topic", ""),  # CA issue tag, e.g. "#push_to_pos"
+        "issue_detail": session.get("original_query", ""),
+        "chat_history": render_chat_history(session),
+        "steps_attempted": render_steps_attempted(session),
+        "attachments": session.get("attachments", []),
+        "name": form.get("name", ""),
+        "phone": form.get("phone", ""),
+        "company": form.get("company", ""),
+        "branch": form.get("branch", ""),
+        "routed_queue": queue,
+        "confidence": session.get("confidence", 0),
+    }
+    _record_turn(session, "assistant", confirmation)
+    # Reset session flow but preserve chat_id binding by leaving the dict in place.
+    session.update({
+        "state": "IDLE",
+        "topic": "",
+        "original_query": "",
+        "solution_steps": [],
+        "step_index": 0,
+        "unresolved_attempts": 0,
+        "docs": [],
+        "ticket_form": {},
+    })
+    return payload
+
+
+def _present_low_conf(session: dict, candidates: list[str], original_query: str) -> dict:
+    session.update({
+        "state": "CHOOSING_CATEGORY",
+        "low_conf_candidates": candidates,
+        "original_query": original_query,
+    })
+    text = (
+        "Saya kurang yakin memahami kendala Anda. Mungkin salah satu kategori "
+        "berikut yang Anda maksud?"
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "question", "text": text, "options": candidates + ["Bukan, jelaskan ulang"]}
+
+
+PREDEFINED_SUGGESTIONS = 3  # PRD UX: show 3 ranked suggestions + escape hatch
+ESCAPE_OPTION = "Lainnya — jelaskan ulang"
+
+
+def _present_predefined_menu(session: dict, category: str, query: str, confidence: int) -> dict:
+    """Show the top-N predefined issues in a category (PRD AC1.3 / AC1.4 drill-down).
+
+    Uses ``match_ca`` to rank entries by relevance to the merchant's actual
+    wording, then takes the top-3. Always appends an escape option
+    ("Lainnya — jelaskan ulang") so the merchant can re-describe if none fit.
+
+    Falls back to authoring-order top-3 when the keyword matcher returns
+    nothing (e.g., merchant said only the category name).
+    """
+    ranked = match_ca(query, category=category, k=PREDEFINED_SUGGESTIONS)
+    if not ranked:
+        ranked = entries_in_category(category)[:PREDEFINED_SUGGESTIONS]
+    if not ranked:
+        return _start_troubleshooting(session, category, query, confidence)
+
+    choices = [e["predefined"] for e in ranked]
+    session.update({
+        "state": "CHOOSING_PREDEFINED",
+        "topic": category,
+        "original_query": query,
+        "confidence": confidence,
+        "predefined_choices": choices,
+    })
+    text = (
+        f"Saya menangkap kendala Anda di kategori \"{category}\".\n\n"
+        f"Mana yang paling sesuai dengan masalah Anda?"
+    )
+    _record_turn(session, "assistant", text)
+    return {
+        "type": "question",
+        "text": text,
+        "options": choices + [ESCAPE_OPTION],
+    }
+
+
+def _present_specific_ca(session: dict, entry: dict) -> dict:
+    """Lock in a specific CA response (after drill-down pick) and present it."""
+    formatted = format_response(entry["response"])
+    tag = (entry.get("tags") or [""])[0]
+    session.update({
+        "state": "TROUBLESHOOTING",
+        "topic": entry.get("category", session.get("topic", "")),
+        "sub_topic": tag,
+        "solution_steps": [formatted],
+        "step_index": 0,
+        "unresolved_attempts": 0,
+        "source": "ca",
+        "ca_matches": [entry],
+        "docs": [],
+    })
+    return _present_step(session)
+
+
+# ---------------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------------
+
+def process_message(chat_id: str, text: str) -> dict:
+    """Drive one turn of the support conversation.
+
+    Returns a Telegram-shaped response dict; ``main.py`` translates this into
+    the appropriate Bot API call.
+    """
+    session = SESSION_STATE.setdefault(chat_id, _fresh_session())
+
+    # AC1.14 — 30-minute idle timeout.
+    if _now() - session.get("last_activity", _now()) > SESSION_TIMEOUT_SECONDS:
+        logger.info("Session %s timed out — resetting.", chat_id)
+        SESSION_STATE[chat_id] = _fresh_session()
+        session = SESSION_STATE[chat_id]
+        # Don't return here — process the incoming message in a fresh session.
+        # AC1.14.1's "auto-closing message" is sent by the timeout reaper job
+        # (out of scope for this turn — would need a background task).
+
+    raw = (text or "").strip()
+    if not raw:
+        return {"type": "message", "text": "Mohon kirim pesan teks ya."}
+
+    # Telegram /start (and /help) — issue a welcoming prompt that primes the
+    # merchant to describe their kendala. Resets any in-flight session.
+    if raw.lower() in ("/start", "/help"):
+        SESSION_STATE[chat_id] = _fresh_session()
+        session = SESSION_STATE[chat_id]
+        welcome = (
+            f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
+            "Ada kendala apa yang sedang Anda alami? Jelaskan singkat ya — "
+            "misalnya:\n"
+            "• \"Foto menu tidak muncul setelah upload\"\n"
+            "• \"Pesanan tidak masuk ke POS\"\n"
+            "• \"QR tidak bisa di-scan customer\"\n\n"
+            "Saya akan bantu cari solusinya."
+        )
+        _record_turn(session, "assistant", welcome)
+        return {"type": "message", "text": welcome}
+
+    _record_turn(session, "user", raw)
+    msg = raw.lower()
+    state = session["state"]
+
+    # ---- AWAITING_CSAT — post-resolution rating capture ----
+    if state == "AWAITING_CSAT":
+        if msg in ("1", "2", "3", "4", "5"):
+            rating = int(msg)
+            _persist_csat(chat_id, rating, session)
+            return _csat_thanks_and_close(session, rating)
+        # Invalid input — re-prompt without losing state.
+        nudge = (
+            "Mohon pilih angka 1 sampai 5 untuk penilaian Anda."
+        )
+        _record_turn(session, "assistant", nudge)
+        return {
+            "type": "question",
+            "text": nudge,
+            "options": ["1", "2", "3", "4", "5"],
+        }
+
+    # ---- TROUBLESHOOTING — sequential Yes/No per step (US2) ----
+    if state == "TROUBLESHOOTING":
+        if msg in _AFFIRMATIVE:
+            return _resolved_close(session)
+        if msg in _NEGATIVE:
+            session["unresolved_attempts"] += 1
+            session["step_index"] += 1
+            # AC2.3 — escalate after 3 consecutive No OR when steps exhausted.
+            if (session["unresolved_attempts"] >= MAX_UNRESOLVED_ATTEMPTS
+                    or session["step_index"] >= len(session["solution_steps"])):
+                return _begin_escalation(session)
+            return _present_step(session)
+        # AC2.6 / AC2.7 — ambiguous response: retry once, then proceed.
+        nudge = (
+            "Mohon balas 'Ya' jika masalah sudah teratasi, atau 'Tidak' untuk "
+            "lanjut ke langkah berikutnya."
+        )
+        _record_turn(session, "assistant", nudge)
+        return {"type": "question", "text": nudge, "options": ["Ya", "Tidak"]}
+
+    # ---- CHOOSING_CATEGORY — low-confidence pick (AC1.9.1) ----
+    if state == "CHOOSING_CATEGORY":
+        candidates = session.get("low_conf_candidates", [])
+        # Exact match against one of the offered categories?
+        match = next((c for c in candidates if c.lower() == msg), None)
+        if match:
+            return _present_predefined_menu(
+                session, match, session.get("original_query", ""), confidence=70,
+            )
+        if "bukan" in msg or "ulang" in msg or "jelaskan" in msg:
+            session["state"] = "IDLE"
+            text_out = "Baik, mohon jelaskan kendala Anda dengan lebih spesifik."
+            _record_turn(session, "assistant", text_out)
+            return {"type": "message", "text": text_out}
+        # Free text → treat as a fresh classification attempt.
+        session["state"] = "IDLE"
+        # fall through to IDLE handling
+
+    # ---- CHOOSING_PREDEFINED — drill-down pick within a category ----
+    if state == "CHOOSING_PREDEFINED":
+        choices = session.get("predefined_choices", [])
+        match = next((c for c in choices if c.lower() == msg), None)
+        if match:
+            entry = find_by_predefined(match)
+            if entry is not None:
+                return _present_specific_ca(session, entry)
+            # Shouldn't happen, but fall back to keyword retrieval if it does.
+            return _start_troubleshooting(
+                session, session.get("topic", ""),
+                session.get("original_query", ""),
+                session.get("confidence", 0),
+            )
+        if "lainnya" in msg or "ulang" in msg or "jelaskan" in msg:
+            session["state"] = "IDLE"
+            text_out = "Baik, mohon jelaskan kendala Anda dengan lebih spesifik."
+            _record_turn(session, "assistant", text_out)
+            return {"type": "message", "text": text_out}
+        # Free text → reclassify from scratch.
+        session["state"] = "IDLE"
+        # fall through to IDLE handling
+
+    # ---- COLLECTING_NAME / PHONE / COMPANY / BRANCH (US4) ----
+    if state == "COLLECTING_NAME":
+        session["ticket_form"]["name"] = raw
+        return _ticket_form_step(
+            session, ("COLLECTING_PHONE", "Berapa nomor HP Anda? (contoh: 081234567890)"),
+        )
+    if state == "COLLECTING_PHONE":
+        if not _PHONE_RE.match(raw.replace(" ", "").replace("-", "")):
+            # AC4.7 — re-prompt on invalid phone.
+            text_out = (
+                "Format nomor HP tidak valid. Mohon kirim ulang "
+                "(contoh: 081234567890 atau +6281234567890)."
+            )
+            _record_turn(session, "assistant", text_out)
+            return {"type": "message", "text": text_out}
+        session["ticket_form"]["phone"] = raw
+        return _ticket_form_step(
+            session, ("COLLECTING_COMPANY", "Apa nama perusahaan / brand Anda?"),
+        )
+    if state == "COLLECTING_COMPANY":
+        session["ticket_form"]["company"] = raw
+        return _ticket_form_step(
+            session, ("COLLECTING_BRANCH", "Apa nama outlet / cabang Anda?"),
+        )
+    if state == "COLLECTING_BRANCH":
+        session["ticket_form"]["branch"] = raw
+        return _finalize_ticket(session)
+
+    # ---- IDLE — fresh issue. Classify and route. ----
+    intent = classify_intent(raw)
+    category = intent["category"]
+    confidence = intent["confidence"]
+
+    # AC1.11 — out-of-scope rejection.
+    if category == "Out of Scope":
+        text_out = (
+            "Mohon maaf, saya hanya dapat membantu kendala operasional produk "
+            "ESB Order (menu, payment, push to POS, aktivasi, dsb). Silakan "
+            "ajukan pertanyaan terkait sistem kami."
+        )
+        _record_turn(session, "assistant", text_out)
+        return {"type": "message", "text": text_out}
+
+    # AC1.9 / AC1.9.1 — low confidence path.
+    if category == "Low Confidence":
+        candidates = intent.get("candidates") or []
+        if candidates:
+            return _present_low_conf(session, candidates[:LOW_CONF_SUGGESTION_COUNT], raw)
+        text_out = (
+            "Saya belum yakin memahami kendala Anda. Bisa berikan detail lebih "
+            "spesifik — misalnya nama menu, pesan error, atau langkah yang "
+            "sudah Anda lakukan?"
+        )
+        _record_turn(session, "assistant", text_out)
+        return {"type": "message", "text": text_out}
+
+    # Happy path: confident category → present the predefined drill-down
+    # menu so the merchant picks the specific issue, then we play back the
+    # exact CA response for it (PRD AC1.3 + AC1.4).
+    return _present_predefined_menu(session, category, raw, confidence)

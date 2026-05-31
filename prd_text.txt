@@ -1,0 +1,616 @@
+﻿PRODUCT REQUIREMENTS DOCUMENT
+AI Chatbot for Support Automation — Phase 1
+ESB Order · Hackatown 2026
+Document Information
+PRD ID
+HACKATOWNJUARA001 — Phase 1
+Document Title
+AI Chatbot for Support Automation — Phase 1
+PRD Submission Date
+May 24, 2026
+Sprint Start
+Jul 6, 2026
+Planned Release
+Aug 3, 2026
+Document Status
+Draft
+Product Owner
+Citra Fadella
+Product Designer
+Sheny Septie, Edvyn Tanu, Iqbal Bagus Dwinanto
+Engineer
+Engelberta Vania
+QA
+Citra Fadella, Sheny Septie, Edvyn Tanu, Iqbal Bagus Dwinanto, Engelberta Vania
+Revision History
+Date
+Note
+Updated By
+May 20, 2026
+Document initiation
+Phase 1 scope refinement & cleanup
+Background Issues
+Business & Strategic Fit
+US1, US2, US3 & US4
+Citra Fadella
+May 22, 2026
+Goals & success metrics
+Renumbered US4 ACs, 
+AC3.2 -Add format attachment
+Removed AC1.14 (form duplicate)
+Restructured Success Metrics (CSAT + ticket reduction)
+Expanded MVP categories list
+Synced AC4.10 with form fields table, 
+Finalized video formats (MP4/MOV, 15MB),
+Merged AC1.11 examples inline, 
+Aligned deflection target with SG#1 (30%),
+Citra Fadella
+Phase Overview
+Phase 1 — Foundation (Current)
+Phase 2 — Expansion
+Focus
+AI chatbot config, issue identification, guided troubleshooting, 
+and 
+auto ticket creation
+WhatsApp channel integration, Layer 2 technical resolution, analytics dashboard, self-serve ticket enhancements
+Channel
+Internal / API
+WhatsApp Business
+AI Scope
+Pre-authored resolution trees · 
+10 
+MVP issue categories for ESB Order
+Live system diagnostics · Proactive issue detection · Expanded categories
+Target Launch
+Q3 2026
+Development: 2-3 Sprints 
+Error & trial: 2 Sprints
+Mid Q4 2026
+Development: 2-3 Sprints 
+Error & trial: 1 Sprint
+Enhancement: 1 Sprint
+Gate to Next Phase
+Intent accuracy > 85% · Deflection rate > 30% · 6 weeks of live data
+N/A — final phase in this PRD
+Background
+ESB Order merchants currently rely on a fully manual 8-step support process to resolve operational issues. The majority of these issues — including QR code failures, menu visibility problems, payment configuration errors, and printer disconnections — are repetitive, structured, and follow predictable resolution paths. Despite this, every interaction is handled manually, creating avoidable workload for the Customer Support (CS) team and unnecessary downtime for merchants.
+Opportunity
+By introducing an AI-powered chatbot in Phase 1, ESB Order can automate the first layer of support for high-frequency operational issues. The chatbot will guide merchants through structured troubleshooting flows and automatically generate support tickets with full conversation context when automation cannot resolve the issue.
+This approach reduces repetitive manual work for the CS team, shortens merchant resolution time, and provides a consistent 24/7 first-response experience without depending on agent availability.
+Key opportunities include:
+Reduce repetitive support interactions handled manually by CS
+Improve merchant self-service resolution capability
+Shorten issue handling and resolution time
+Improve ticket quality through structured issue collection
+Build structured conversation datasets for future AI model improvements
+Establish the technical foundation for WhatsApp and advanced AI support in Phase 2
+Business & Strategic Fit
+#
+Strategic Goal
+1
+Deflect 30%+ of structured support tickets within 60 days of launch, reducing repetitive CS workload.
+2
+Reduce ticket volume
+ by 
+4
+0% across the 
+10
+ MVP issue categories
+ (Ticket type: Request, Task, question)
+3
+Establish a 24/7 first-response layer that does not depend on agent availability.
+4
+Generate a structured conversation dataset to inform Layer 2 AI training and knowledge-base improvements.
+S
+uccess Metrics
+Metric
+Baseline
+Target
+Timeframe
+Measurement Method
+Reduce ticket volume 
+(Type: Request, Task, question)
+1,317 tickets/month
+(Type: Request, Task,question) 
+Reduce ticket volume by 40% 
+(Reduce 527 tickets ) to 790 issues/ month
+By the end of Q4 2026
+Ticketing report Dashboard
+Intent Classification Accuracy
+0 - Baseline New feature
+> 85% confidence AI 
+Within 6 weeks of launch
+Analytics dashboard — classified vs. total intents
+Merchant CSAT Score
+0 - Baseline New feature
+CSAT score > 3.5
+>= 3.5/5.0 within 60 days
+Post-session CSAT prompt in Merchant App
+Ticket deflection rate
+0 - Baseline New feature
+30% from total conversation
+Within 60 days
+Analytics dashboard — Resolved sessions / total sessions
+Deliverables
+Document
+PIC
+Status
+Notes
+Tracker Doc
+Citra Fadella
+Done
+Ticketing dashboard
+iReport confidence
+Figma Design
+Sheny Septie
+Done
+Figma: 
+Here
+Test Plan
+QA Team
+Done
+Test Plan: 
+Here
+Technical Document
+Engelberta Vania
+Done
+Tech spec: 
+Here
+Stakeholders
+Role
+PIC
+Status
+Notes
+Product Management
+Citra Fadella
+Done
+PRD Owner
+Engineering
+Engelberta Vania
+In Review
+Test plan draft
+Design
+Sheny Septie, Edvyn Tanu
+In Review
+Wireframes WIP
+Quality Assurance
+Citra Fadella
+In Review
+Test plan draft
+Customer Support 
+Iqbal Bagus Dwinanto
+In Review
+Need routing matrix sign-off
+Data / AI
+Engelberta Vania
+In Review
+Training dataset confirmation
+Tracker Doc
+Ticketing dashboard
+iReport confidence
+Requirements — User Stories & Acceptance Criteria
+US1: Issue Identification via Chatbot
+As an 
+outlet staff,
+ 
+I want the chatbot to correctly identify my issue category 
+S
+o that I receive relevant troubleshooting immediately, without having to explain myself multiple times.
+User Steps
+Step
+Actor
+Action
+1
+Merchant
+Describes the issue in natural language
+2
+System
+AI analyzes input and classifies it into one of 
+10
+ MVP categories
+3
+System
+Presents a follow-up question to narrow down the root cause
+4
+Merchant
+Selects an option or provides more detail
+5
+System
+Continues narrowing until a specific issue is identified or escalation is triggered
+MVP Issue Categories
+ 
+(Source: Data ticketing issue Q4 2025 & Q1 2026)
+ESO Activation / Deactivation
+Order Issues
+Payment Gateway Setup
+Menu Image Upload
+Menu Issues
+Banner Image Upload
+ESO Merchant Issues
+Payment & QR Issues
+Guiding Configuration
+Push to POS Issues
+Acceptance Criteria
+ID
+Flow
+Acceptance Criteria
+Notes
+AC1.1
+✅ Positive
+The AI has been trained on ESB Order issue data provided by the ESB team. It uses this knowledge as the sole basis for classification
+AC1.2
+✅ Positive
+The system classifies merchant issue into one of the MVP categories within a maximum of 3 seconds
+Max response time: 3 s
+AC1.3
+✅ Positive
+The system displays a relevant follow-up question after successful classification
+AC1.4
+✅ Positive
+The system continues asking progressively specific questions until the issue category is identified
+AC1.5
+✅ Positive
+Once the issue is detected, the merchant is not required to navigate any additional 
+question
+.
+AC1.6
+✅ Positive
+The system supports chatbot availability 24 hours per day without dependency on CS agent availability
+AC1.7
+✅ Positive
+System stores conversation context throughout the active session
+AC1.8
+✅ Positive
+System logs issue category, session timestamp, and classification result for analytics purposes
+AC1.9
+❌ Negative
+System does not auto-classify issues when AI confidence score is below 70%. 
+Confidence threshold: 70%
+AC1.9.1
+❌ Negative
+System displays 2–3 suggested issue categories when the confidence score is below 70%
+AC1.10
+❌ Negative
+System prompts merchant to re-enter issue description when input contains unsupported or unrecognizable content
+AC1.11
+❌ Negative
+System rejects out-of-scope questions unrelated to ESB Product operational support
+‘How many merchants does ESB have?'
+'Who is the CTO of ESB?'
+Scope-limited
+AC1.11.1
+❌ Negative
+The system displays a scope limitation response for unsupported questions
+AC1.12
+❌ Negative
+When a merchant sends a screenshot only (no text), the system acknowledges receipt and asks for a brief description. 
+Image classification: Phase 2
+AC1.12.1
+❌ Negative
+System requests text description when merchant uploads image without accompanying issue explanation
+AC1.12.2
+❌ Negative
+ The system does NOT attempt to auto-classify from the image alone in Phase 1.
+AC1.13
+❌ Negative
+If the issue requires escalation to an internal team, the system automatically initiates ticket creation (see US4). 
+See US4
+AC1.14
+⚠️ Edge Case
+System marks the session as abandoned when no merchant response is received within 30 minutes
+Timeout: 30 min
+AC1.14.1
+⚠️ Edge Case
+The system sends an automatic session closing message after a timeout
+AC1.15
+⚠️ Edge Case
+The merchant can continue the session from the latest confirmed step within the active session window
+AC1.16
+⚠️ Edge Case
+System preserves session context during temporary connection interruptions
+US2: Guided Troubleshooting Flow
+As an 
+outlet staff
+, 
+I want the chatbot to walk me through fixing a known issue step-by-step 
+so that I can resolve it during operational hours without calling support.
+Flow
+Step
+Actor
+Action
+1
+Merchant
+Describes the issue (see US1 flow)
+2
+System
+Presents the first troubleshooting step
+3
+Merchant
+Confirms outcome: replies 'Yes' (resolved) or 'No' (not resolved)
+4
+System
+If 'Yes': closes session as Resolved. If 'No': presents the next step
+5
+System
+Repeats until resolved or escalation threshold is reached
+Acceptance Criteria
+ID
+Flow
+Acceptance Criteria
+Notes
+AC2.1
+✅ Positive
+The system displays troubleshooting steps sequentially after issue identification
+AC2.2
+✅ Positive
+Each troubleshooting step includes confirmation options for “Yes” and “No.”
+AC2.2.1
+✅ Positive
+When the merchant replies 
+'Yes'
+, the system marks session as Resolved when merchant confirms issue resolution
+Status: Resolved
+AC2.2.1.1
+✅ Positive
+System displays a closing confirmation message after successful resolution
+'Great, your issue has been resolved. Is there anything else?' 
+AC2.2.2
+✅ Positive
+System continues to the next troubleshooting step when merchant selects
+ “No.”
+AC2.2.2.1
+✅ Positive
+System stores troubleshooting progress throughout the session
+AC2.3
+❌ Negative
+System stops automated troubleshooting after 3 consecutive unresolved attempts
+Max retries: 3
+AC2.3.1
+❌ Negative
+The system offers ticket escalation after the troubleshooting threshold is reached
+AC2.4
+❌ Negative
+System does not generate unsupported freeform troubleshooting responses outside configured flows
+AC2.4.1
+❌ Negative
+System immediately offers escalation when no troubleshooting flow exists for the detected issue category
+AC2.5
+❌ Negative
+System prompts merchant to provide valid confirmation response when unsupported answers are entered
+AC2.6
+⚠️ Edge Case
+System retries the confirmation prompt once when merchant response is ambiguous
+AC2.7
+⚠️ Edge Case
+System proceeds to next troubleshooting step if merchant remains ambiguous after one retry
+the system prompts: 'Please reply Yes if the issue is resolved, or No to continue.
+U
+S3: Attachment Upload During Chat
+As an 
+outlet staff,
+ 
+I want to attach screenshots or evidence to my support conversation 
+so that the support team can see exactly what I am experiencing.
+Flow
+Step
+Actor
+Action
+1
+Merchant
+Describes the issue (see US1 flow)
+2
+Merchant
+Uploads an image or video at any point during the session
+3
+System
+Reads, analyzes, and stores the attachment against the session ID
+4
+System
+Displays the attachment inline as a thumbnail in the chat
+Acceptance Criteria
+ID
+Flow
+Acceptance Criteria
+Notes
+AC3.1
+✅ Positive
+Merchant can upload up to 3 attachments per session
+Max: 3 files per session
+AC3.2
+✅ Positive
+System accepts JPG, PNG, and WEBP image formats and video format MP4, or MOV
+AC3.3
+✅ Positive
+System stores uploaded attachments under the active session ID
+AC3.4
+✅ Positive
+System requests issue description when image is uploaded before text explanation
+AC3.5
+✅ Positive
+System includes all uploaded attachments in generated support tickets
+AC3.6
+❌ Negative
+System rejects unsupported file formats
+Formats allowed: JPG, PNG, WEBP, MP4, or MOV
+AC3.7
+❌ Negative
+System rejects files larger than 15 MB
+Max size: 15 MB ·
+AC3.8
+❌ Negative
+The system displays a validation message for invalid uploads
+Max size: 15 MB · Formats: JPG, PNG, WEBP,MP4, or MOV
+AC3.9
+⚠️ Edge Case
+System preserves uploaded attachments if merchant reconnects within active session window
+Planned: Phase 1 · Flagged if deferred
+AC3.10
+⚠️ Edge Case
+System continues chat flow even if attachment upload fails
+AC3.11
+⚠️ Edge Case
+System maintains attachment linkage to ticket after escalation occurs
+US4: Self-Service Ticket Creation
+As an
+ outlet staff
+, 
+I want to create a support ticket directly from the chatbot when my issue is unresolved, 
+so that I do not have to re-explain my problem to the support team.
+Flow
+Step
+Actor
+Action
+1
+System
+Determines the issue cannot be auto-resolved (US2 AC2.3 or AC2.4)
+2
+System
+Presents a pre-filled ticket form for merchant review
+3
+Merchant
+Reviews and edits any pre-filled fields if needed
+4
+Merchant
+Taps 'Create Ticket' to submit
+5
+System
+Creates the ticket and returns a confirmation with ticket number
+Ticket Form Fields
+Field
+Source
+Editable?
+Name
+Manual input by user
+Yes
+Phone Number
+Manual input by user
+Yes
+Company Name
+Manual input by user
+Yes
+Branch Name
+Manual input by user
+Yes
+Issue Category
+Auto-filled from AI classification
+Yes
+Issue Detail
+Auto-filled from conversation context
+Yes
+Chat History
+Full session transcript
+No (read-only)
+Attachments
+All files uploaded during the session
+No (read-only)
+Steps Attempted
+Troubleshooting steps completed in session
+No (read-only)
+Acceptance Criteria
+ID
+Flow
+Acceptance Criteria
+Notes
+AC4.1
+✅ Positive
+System automatically displays ticket form when escalation flow is triggered
+AC4.2
+✅ Positive
+The ticket creation form is pre-populated with the AI-classified Issue Category and Issue Detail from conversation context. Remaining fields (Name, Phone, Company, Branch) require manual input from the user.
+AC4.3
+✅ Positive
+System displays ticket creation confirmation message after successful submission
+ 
+'Ticket #XXXX has been created. 
+Our team will respond within 1-2 hours during operational hours (08:00-22:00 WIB)
+.' 
+Format: Ticket #[6-digit number]
+AC4.4
+✅ Positive
+The ticket is automatically routed to the correct support queue based on the issue category.
+AC4.5
+✅ Positive
+System includes full chat history in the generated ticket
+AC4.6
+❌ Negative
+System prevents ticket submission when required fields are empty
+AC4.7
+❌ Negative
+System displays validation error when phone number format is invalid
+AC4.8
+❌ Negative
+System displays fallback error message when ticketing API is unavailable
+AC4.9
+❌ Negative
+System preserves ticket draft and chat context when ticket submission fails
+AC4.10
+❌ Negative
+System prevents modification of read-only fields including chat history and troubleshooting logs
+AC4.11
+⚠️ Edge Case
+System leaves phone number field empty when auto-fill fails
+AC4.12
+⚠️ Edge Case
+System requires manual phone number input before ticket submission when auto-fill fails
+AC4.13
+⚠️ Edge Case
+System preserves ticket draft during temporary disconnection within active session window
+AC4.14
+⚠️ Edge Case
+System allows merchant to reopen incomplete ticket form within active session timeout period
+AC4.15
+⚠️ Edge Case
+System maintains attachment linkage after ticket retry submission
+Known Limitations & Constraints
+Image-based issue classification is not supported in Phase 1
+AI responses are limited to predefined ESB Product issue categories and troubleshooting flows
+Freeform AI troubleshooting outside the configured knowledge base is out of scope
+Chatbot channel support is limited to internal/API integration during Phase 1
+WhatsApp Business integration will be delivered in Phase 2
+Analytics dashboard and advanced reporting are not included in Phase 1 will be delivered in Phase 2
+Session history is retained only within a 30-minute active session window
+Cross-session memory and persistent conversation history are not supported
+Layer 2 technical diagnostics and proactive monitoring are out of scope
+Attachment upload supports image & video only in Phase 1
+AI classification accuracy depends on the quality and completeness of the training data provided by ESB teams
+Ticket routing depends on existing ticketing system integration availability
+Multi-language NLP optimization is not included in Phase 1
+Voice input and voice response interactions are not supported
+Internet connectivity is required for chatbot interaction and ticket submission
+Out of Scope
+#
+Item
+Reason / Future Plan
+1
+WhatsApp Business channel integration
+Planned for Phase 2
+2
+Analytics & reporting dashboard
+Planned for Phase 2
+3
+Layer 2 technical resolution (live diagnostics)
+Planned for Phase 2
+4
+Image-based auto-classification
+Planned for Phase 2
+5
+Proactive / outbound issue detection
+Planned for Phase 2
+6
+Cross-session memory / conversation history
+Not in scope for Phase 1
+7
+Non-ESB Order product categories
+Explicitly excluded from AI scope
+Data Tracker & Monitoring
+DataStudio Dashboard
+— Link TBD —
+Back Office Link
+— Link TBD —
+Meeting Notes
+Date
+Attendees
+Summary
+—
+—
+—

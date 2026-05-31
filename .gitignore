@@ -1,0 +1,45 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Local data
+tickets.db
+faiss_index/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+~$*
+
+# Tooling
+.claude/
+
+# Excel temp lock files
+~$*.xlsx
+
+# Frontend (skipped from initial repo; has its own .git)
+frontend/
+
+# Logs
+*.log
+
+# Large data / internal docs
+*.xlsx
+*.docx
+*.jsonl
+bundle_code.js
+CS Chatbot Dashboard _standalone_.html
+_*.md
+_*.txt
+_*.xml
