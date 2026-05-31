@@ -28,8 +28,9 @@ Thumbs.db
 # Excel temp lock files
 ~$*.xlsx
 
-# Frontend (skipped from initial repo; has its own .git)
-frontend/
+# Frontend (Next.js manages its own .gitignore in frontend/)
+frontend/node_modules/
+frontend/.next/
 
 # Logs
 *.log
