@@ -34,6 +34,7 @@ frontend/.next/
 
 # Logs
 *.log
+.cloudflared.log*
 
 # Large data / internal docs
 *.xlsx

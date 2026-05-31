@@ -26,6 +26,7 @@ import config  # noqa: F401 — loads .env before any os.getenv reads
 
 import logging
 import os
+from collections import OrderedDict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,38 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 INDEX_DIR = Path(__file__).parent / "faiss_index"
+
+# Price optimization: cache identical (query, topic, sub_topic, k) tuples so
+# repeat questions don't hit Vertex AI Search (~$2/1000 queries). Bounded LRU
+# in-process — wiped on server restart, which is fine for a chatbot. Tracked
+# globally so /health and smoke tests can read it.
+_QUERY_CACHE_MAX = 256
+_query_cache: "OrderedDict[tuple, list[dict[str, Any]]]" = OrderedDict()
+_vertex_query_count = 0
+_cache_hit_count = 0
+
+
+def _cache_get(key: tuple) -> list[dict[str, Any]] | None:
+    if key not in _query_cache:
+        return None
+    _query_cache.move_to_end(key)  # mark as recently used
+    return [dict(d) for d in _query_cache[key]]  # defensive copy
+
+
+def _cache_put(key: tuple, value: list[dict[str, Any]]) -> None:
+    _query_cache[key] = [dict(d) for d in value]
+    _query_cache.move_to_end(key)
+    while len(_query_cache) > _QUERY_CACHE_MAX:
+        _query_cache.popitem(last=False)  # evict LRU
+
+
+def get_cost_stats() -> dict[str, int]:
+    """Vertex query counts since process start — useful for /health or smoke."""
+    return {
+        "vertex_queries": _vertex_query_count,
+        "cache_hits": _cache_hit_count,
+        "cache_size": len(_query_cache),
+    }
 
 # Soft mapping: hackathon-brief topic -> candidate Excel `category_tag` values.
 # Used to bias retrieval toward topic-aligned tickets; unmapped topics skip the
@@ -198,7 +231,10 @@ def _retrieve_via_vertex(
     req = de.SearchRequest(
         serving_config=_vertex_serving_config(),
         query=augmented,
-        page_size=max(k, 3),
+        # Exactly k results — Vertex charges per query not per result, but
+        # smaller responses are slightly cheaper to deserialize and never
+        # accidentally pull in extractive_answer/snippet costs.
+        page_size=max(k, 1),
     )
     try:
         resp = client.search(req)
@@ -235,15 +271,50 @@ def retrieve_troubleshooting(
 
     Prefers Vertex AI Search when configured (production with GCP billing).
     Otherwise uses the local FAISS index built from ``vertex_corpus.jsonl``.
+
+    Cost note: every Vertex call costs ~$0.002. Identical queries are served
+    from an in-process LRU cache (see _query_cache); very short queries skip
+    Vertex entirely. Trailing whitespace / case differences are normalized
+    so e.g. "Order Gagal?" and "order gagal?" share a cache slot.
     """
+    global _vertex_query_count, _cache_hit_count
+
+    # Skip Vertex on empty / garbage input — no point paying for it.
+    q_clean = (query or "").strip()
+    if len(q_clean) < 3:
+        return []
+
+    # Cache key: normalized query + lowered topic/sub_topic + k.
+    cache_key = (
+        " ".join(q_clean.lower().split()),
+        (topic or "").lower(),
+        (sub_topic or "").lower(),
+        int(k),
+    )
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        _cache_hit_count += 1
+        logger.debug("rag cache hit (%d total) for %r", _cache_hit_count, cache_key[0][:60])
+        return cached
+
+    results: list[dict[str, Any]] = []
     if vertex_search_available():
         results = _retrieve_via_vertex(query, topic, k)
-        if results:
-            return results
-        logger.warning(
-            "Vertex AI Search returned no results; falling back to FAISS.",
+        _vertex_query_count += 1
+        logger.info(
+            "vertex query #%d (%d cached, %d cache hits): %r -> %d results",
+            _vertex_query_count, len(_query_cache), _cache_hit_count,
+            q_clean[:60], len(results),
         )
-    return _retrieve_via_faiss(query, topic, sub_topic, k)
+        if not results:
+            logger.warning(
+                "Vertex AI Search returned no results; falling back to FAISS.",
+            )
+    if not results:
+        results = _retrieve_via_faiss(query, topic, sub_topic, k)
+
+    _cache_put(cache_key, results)
+    return results
 
 
 def get_retriever():
