@@ -42,6 +42,7 @@ frontend/.next/
 *.jsonl
 bundle_code.js
 CS Chatbot Dashboard _standalone_.html
+\[Prototype\] Sukabot Suite.html
 _*.md
 _*.txt
 _*.xml

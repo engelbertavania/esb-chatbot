@@ -5,8 +5,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import base64
+import gzip
+import html
 import json
 import logging
+import re
 import httpx
 import os
 
@@ -263,244 +267,232 @@ def _ticket_to_bundle(t: Ticket) -> dict:
     }
 
 
-# The bundle's OverviewView, BotView, and Filter code use
-# `new Date('2026-05-22T...')` as their reference "now" for the 30-day window.
-# Real tickets dated after that fall outside the chart range, so the line
-# chart appears empty. We patch the constant in each JS asset once at startup
-# (or whenever the date rolls over) and cache the rebuilt HTML.
+# The new Sukabot Suite ships as a top-level shell with three iframes
+# (app-cs, app-tm, app-sl). The CS Chatbot Dashboard we care about lives in
+# `app-cs` as an HTML-entity-encoded srcdoc. We decode that srcdoc, patch the
+# inner __bundler/manifest (date pivot + Indonesian transcript) and
+# __bundler/template (App() state refactor + per-request data placeholder),
+# then re-encode it back into the suite shell.
+#
+# Per-request ticket data is spliced in via a fixed-text placeholder so the
+# heavy patch work runs once a day; serve_dashboard() only does two string
+# replaces on the cached output.
+SUITE_HTML_PATH = "[Prototype] Sukabot Suite.html"
+LEGACY_BUNDLE_PATH = "CS Chatbot Dashboard _standalone_.html"
+DATA_PLACEHOLDER = "__SUKABOT_DATA_PLACEHOLDER__"
+SUBMAP_PLACEHOLDER = "__SUKABOT_SUBMAP_PLACEHOLDER__"
+
+# Cache holds the suite HTML with structural patches applied but with the
+# data placeholders intact — they're substituted per-request.
 _PATCHED_BUNDLE_CACHE: dict = {"date": None, "html": None}
 
 
-def _build_patched_bundle() -> str:
-    """Return the standalone HTML with all hardcoded reference dates rewritten to today."""
-    import base64
-    import datetime as _dt
-    import gzip
-    import re as _re
+def _patch_appcs_srcdoc(decoded: str, today: str) -> str:
+    """Patch the decoded app-cs iframe srcdoc.
 
-    today = _dt.date.today().isoformat()
-    if _PATCHED_BUNDLE_CACHE["date"] == today and _PATCHED_BUNDLE_CACHE["html"]:
-        return _PATCHED_BUNDLE_CACHE["html"]
-
-    with open("CS Chatbot Dashboard _standalone_.html", "r", encoding="utf-8") as f:
-        html = f.read()
-
-    m = _re.search(
-        r'(<script type="__bundler/manifest">\s*)(.*?)(\s*</script>)',
-        html,
-        _re.DOTALL,
-    )
-    if not m:
-        _PATCHED_BUNDLE_CACHE.update(date=today, html=html)
-        return html
-
-    manifest = json.loads(m.group(2))
+    Returns a new decoded srcdoc with:
+      * date pivots (2026-05-22) rewritten to ``today`` in every JS payload
+      * ``buildTranscript`` short-circuited to use ``t.transcript`` when present
+      * App() converted to ticket state so window.__INJECTED_TICKETS wins
+      * an inline <script> with DATA_PLACEHOLDER / SUBMAP_PLACEHOLDER inserted
+        before <div id="root"> so it executes before the babel-transpiled
+        scripts that define App
+    """
     new_t00 = f"{today}T00:00:00"
     new_t12 = f"{today}T12:00:00"
 
-    patched_any = False
-    for uuid, entry in manifest.items():
+    # ── Manifest: rewrite each JS payload in-place ────────────────────────
+    mm = re.search(
+        r'<script type="__bundler/manifest">(.*?)</script>',
+        decoded, re.DOTALL,
+    )
+    if not mm:
+        return decoded
+    manifest = json.loads(mm.group(1))
+    for entry in manifest.values():
         mime = entry.get("mime", "")
         if not mime.endswith("javascript"):
             continue
-        raw_bytes = base64.b64decode(entry["data"])
+        raw = base64.b64decode(entry["data"])
         was_compressed = bool(entry.get("compressed"))
         if was_compressed:
             try:
-                raw_bytes = gzip.decompress(raw_bytes)
+                raw = gzip.decompress(raw)
             except Exception:
                 continue
         try:
-            src = raw_bytes.decode("utf-8")
+            src = raw.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        needs_patch = (
-            "2026-05-22" in src
-            or "function buildTranscript" in src
-            or "TOPIC_TREE[tp].includes(sub)" in src
-            or "function EscalationView" in src
-        )
-        if not needs_patch:
+        if "2026-05-22" not in src and "function buildTranscript" not in src:
             continue
         patched = (
             src.replace("2026-05-22T00:00:00", new_t00)
                .replace("2026-05-22T12:00:00", new_t12)
         )
-        # Bundle's buildTranscript() synthesizes a fake English chat. Replace
-        # the English strings with Indonesian and prefer the real transcript
-        # we inject onto each ticket.
+        # buildTranscript: short-circuit to real transcript when present, then
+        # Indonesianize the English mock fallback strings.
         patched = patched.replace(
-            "function buildTranscript(t) {\n  const messages = [",
+            "function buildTranscript(t) {\n  return [",
             "function buildTranscript(t) {\n"
             "  if (t.transcript && t.transcript.length) return t.transcript;\n"
-            "  const messages = [",
+            "  return [",
         )
         patched = patched.replace(
-            "I can help with that! Here's how: navigate to Settings → ${t.topic} → "
-            "${t.subTopic.replace(/_/g, ' ')}. Let me know if you need more details.",
-            "Saya bisa bantu! Buka Pengaturan → ${t.topic} → "
-            "${t.subTopic.replace(/_/g, ' ')}. Beri tahu saya jika butuh detail lebih lanjut.",
+            "`I can help with that! Navigate to Settings → ${t.topic} → ${t.subTopic.replace(/_/g,' ')}. Let me know if you need more details.`",
+            "`Saya bisa bantu! Buka Pengaturan → ${t.topic} → ${t.subTopic.replace(/_/g,' ')}. Beri tahu saya jika butuh detail lebih lanjut.`",
         )
         patched = patched.replace(
-            "I'm having trouble understanding. Let me connect you with a CS agent.",
-            "Maaf, saya kurang paham. Saya akan menghubungkan Anda dengan agen CS.",
+            "`I'm having trouble understanding. Let me connect you with a CS agent.`",
+            "`Maaf, saya kurang paham. Saya akan menghubungkan Anda dengan agen CS.`",
         )
         patched = patched.replace(
-            "Yes please, I need help with this.",
-            "Iya tolong, saya butuh bantuan untuk ini.",
+            "'Yes please, I need help with this.'",
+            "'Iya tolong, saya butuh bantuan untuk ini.'",
         )
         patched = patched.replace(
-            "Connecting you to ${t.agent || 'an agent'} now. They will respond shortly.",
-            "Menghubungkan Anda ke ${t.agent || 'agen'} sekarang. Mereka akan segera membalas.",
-        )
-        patched = patched.replace(
-            "Thanks, waiting...",
-            "Terima kasih, ditunggu...",
-        )
-        # TopicView's "Top 10 Sub-Topics" table reverse-looks-up each sub-topic
-        # in the hardcoded TOPIC_TREE. Our injected sub-topic slugs aren't in
-        # that list, so they all bucket as "Other". Consult our injected map
-        # before giving up.
-        patched = patched.replace(
-            "topic: TOPICS.find(tp => TOPIC_TREE[tp].includes(sub)) || 'Other',",
-            "topic: TOPICS.find(tp => TOPIC_TREE[tp].includes(sub)) "
-            "|| (window.__SUBTOPIC_TO_TOPIC && window.__SUBTOPIC_TO_TOPIC[sub]) "
-            "|| 'Other',",
-        )
-        # EscalationView Status Board — make cards draggable between columns.
-        # Cards POST /api/tickets/{dbId}/status on drop; on success the page
-        # reloads so the Kanban (and KPIs) reflect the new state.
-        patched = patched.replace(
-            "<div key={tk.id} onClick={() => onDrill(`${tk.id}`, `${tk.user}`, [tk])}",
-            "<div key={tk.id} draggable={true}"
-            " onDragStart={e => { e.dataTransfer.setData('text/plain', String(tk.dbId || '')); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.style.opacity = '0.45'; }}"
-            " onDragEnd={e => { e.currentTarget.style.opacity = '1'; }}"
-            " onClick={() => onDrill(`${tk.id}`, `${tk.user}`, [tk])}",
-        )
-        patched = patched.replace(
-            "<div key={col.status} style={{ background:t.surface2, borderRadius:10",
-            "<div key={col.status}"
-            " onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.style.outline = '2px dashed ' + t.accent; e.currentTarget.style.outlineOffset = '-2px'; }}"
-            " onDragLeave={e => { e.currentTarget.style.outline = 'none'; }}"
-            " onDrop={async e => {"
-            "   e.preventDefault();"
-            "   e.currentTarget.style.outline = 'none';"
-            "   const dbId = e.dataTransfer.getData('text/plain');"
-            "   if (!dbId) return;"
-            "   const moved = allTickets.find(x => String(x.dbId) === String(dbId));"
-            "   if (!moved || moved.status === col.status) return;"
-            "   const newStatus = col.status;"
-            "   if (typeof window.__setTickets === 'function') {"
-            "     window.__setTickets(prev => prev.map(x => String(x.dbId) === String(dbId) ? Object.assign({}, x, {status: newStatus}) : x));"
-            "   }"
-            "   try {"
-            "     const r = await fetch('/api/tickets/' + encodeURIComponent(dbId) + '/status', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status: newStatus}) });"
-            "     if (!r.ok) throw new Error('HTTP ' + r.status);"
-            "   } catch (err) {"
-            "     console.error('Status update failed', err);"
-            "     alert('Gagal memperbarui status tiket: ' + err.message);"
-            "     if (typeof window.__setTickets === 'function') {"
-            "       const prevStatus = moved.status;"
-            "       window.__setTickets(prev => prev.map(x => String(x.dbId) === String(dbId) ? Object.assign({}, x, {status: prevStatus}) : x));"
-            "     }"
-            "   }"
-            " }}"
-            " style={{ background:t.surface2, borderRadius:10",
+            "`Connecting you to ${t.agent || 'an agent'} now. They will respond shortly.`",
+            "`Menghubungkan Anda ke ${t.agent || 'agen'} sekarang. Mereka akan segera membalas.`",
         )
         out = patched.encode("utf-8")
         if was_compressed:
             out = gzip.compress(out)
         entry["data"] = base64.b64encode(out).decode("ascii")
-        patched_any = True
-
-    if not patched_any:
-        _PATCHED_BUNDLE_CACHE.update(date=today, html=html)
-        return html
-
     new_manifest = json.dumps(manifest, separators=(",", ":"))
-    rebuilt = html[: m.start(2)] + new_manifest + html[m.end(2) :]
+    decoded = decoded[: mm.start(1)] + new_manifest + decoded[mm.end(1):]
 
-    # Patch the inline App component (lives in the bundler/template JSON blob)
-    # to put TICKETS into useState and expose the setter on window. Without
-    # this hook, the kanban drop handler would have to full-reload the page to
-    # see status changes.
-    #
-    # Note: we don't use re.search here — the template's JSON-encoded content
-    # contains literal "</script>" substrings (json.dumps doesn't escape "/"),
-    # which would terminate a non-greedy regex too early. Anchor instead to
-    # the file's final </script>.
-    tmpl_open = '<script type="__bundler/template">'
-    tmpl_start = rebuilt.find(tmpl_open)
-    if tmpl_start != -1:
-        content_start = tmpl_start + len(tmpl_open)
-        content_end = rebuilt.rfind("</script>")
-        if content_end > content_start:
-            json_blob = rebuilt[content_start:content_end].strip()
-            try:
-                template_html = json.loads(json_blob)
-            except json.JSONDecodeError:
-                template_html = None
-            if template_html and "function App()" in template_html:
-                old_app_open = (
-                    "function App() {\n"
-                    "  const [active, setActive] = useState('overview');"
-                )
-                new_app_open = (
-                    "function App() {\n"
-                    "  const [tickets, setTickets] = useState(\n"
-                    "    (window.__INJECTED_TICKETS && window.__INJECTED_TICKETS.length)\n"
-                    "      ? window.__INJECTED_TICKETS\n"
-                    "      : TICKETS\n"
-                    "  );\n"
-                    "  React.useEffect(() => { window.__setTickets = setTickets; "
-                    "return () => { if (window.__setTickets === setTickets) delete window.__setTickets; }; }, []);\n"
-                    "  const [active, setActive] = useState('overview');"
-                )
-                patched_tpl = template_html.replace(old_app_open, new_app_open)
-                patched_tpl = patched_tpl.replace(
-                    "const filteredTickets = useMemo(() => applyFilters(TICKETS, filters), [filters]);",
-                    "const filteredTickets = useMemo(() => applyFilters(tickets, filters), [filters, tickets]);",
-                )
-                patched_tpl = patched_tpl.replace(
-                    "<View tickets={filteredTickets} allTickets={TICKETS} onDrill={handleDrill} />",
-                    "<View tickets={filteredTickets} allTickets={tickets} onDrill={handleDrill} />",
-                )
-                if patched_tpl != template_html:
-                    # Escape "</" -> "<\/" so the JSON-encoded template can't
-                    # prematurely close the surrounding <script> tag. The
-                    # original bundle stored these as </ unicode escapes;
-                    # json.dumps emits them as literal "</", which the HTML
-                    # parser would see as the end of the wrapper script.
-                    new_tpl_json = json.dumps(patched_tpl).replace("</", "<\\/")
-                    rebuilt = (
-                        rebuilt[:content_start]
-                        + "\n"
-                        + new_tpl_json
-                        + "\n  "
-                        + rebuilt[content_end:]
-                    )
+    # ── Template: rewrite App() + inject data placeholder ─────────────────
+    # The template's JSON-encoded content contains literal "</script>"
+    # substrings (json.dumps doesn't escape "/"), so a non-greedy regex would
+    # stop too early. Anchor instead to the file's final </script> — the
+    # template script is the last one in the srcdoc body.
+    tpl_open = '<script type="__bundler/template">'
+    tpl_start = decoded.find(tpl_open)
+    if tpl_start == -1:
+        return decoded
+    content_start = tpl_start + len(tpl_open)
+    content_end = decoded.rfind("</script>")
+    if content_end <= content_start:
+        return decoded
+    try:
+        template_html = json.loads(decoded[content_start:content_end].strip())
+    except json.JSONDecodeError:
+        return decoded
 
-    _PATCHED_BUNDLE_CACHE.update(date=today, html=rebuilt)
-    logging.info("Patched bundle reference date to %s (cache rebuilt)", today)
-    return rebuilt
+    old_app_open = (
+        "function App() {\n"
+        "  const [active, setActive] = useState('overview');"
+    )
+    new_app_open = (
+        "function App() {\n"
+        "  const [tickets, setTickets] = useState(\n"
+        "    (window.__INJECTED_TICKETS && window.__INJECTED_TICKETS.length)\n"
+        "      ? window.__INJECTED_TICKETS\n"
+        "      : TICKETS\n"
+        "  );\n"
+        "  React.useEffect(() => { window.__setTickets = setTickets;"
+        " return () => { if (window.__setTickets === setTickets) delete window.__setTickets; }; }, []);\n"
+        "  const [active, setActive] = useState('overview');"
+    )
+    patched_tpl = template_html.replace(old_app_open, new_app_open)
+    patched_tpl = patched_tpl.replace(
+        "const filteredTickets = useMemo(() => applyFilters(TICKETS, filters), [filters]);",
+        "const filteredTickets = useMemo(() => applyFilters(tickets, filters), [filters, tickets]);",
+    )
+    patched_tpl = patched_tpl.replace(
+        "allTickets={TICKETS}",
+        "allTickets={tickets}",
+    )
+
+    # Per-request data injection. The placeholders are pure ASCII so they
+    # survive both JSON-encoding (template) and HTML-entity-encoding (srcdoc)
+    # unchanged, letting serve_dashboard substitute with a single .replace().
+    injection = (
+        '<script id="sukabot-data">\n'
+        f'window.__INJECTED_TICKETS = {DATA_PLACEHOLDER};\n'
+        f'window.__SUBTOPIC_TO_TOPIC = {SUBMAP_PLACEHOLDER};\n'
+        'if (window.__INJECTED_TICKETS && window.__INJECTED_TICKETS.length) {\n'
+        '  window.__INJECTED_TICKETS.forEach(function(t){ t.created = new Date(t.created); });\n'
+        '}\n'
+        '</script>'
+    )
+    patched_tpl = patched_tpl.replace(
+        '<body>\n<div id="root"></div>',
+        f'<body>\n{injection}\n<div id="root"></div>',
+        1,
+    )
+
+    # Escape "</" -> "<\/" so the JSON-encoded template can't prematurely
+    # close the wrapping <script> tag once the iframe srcdoc is decoded.
+    new_tpl_json = json.dumps(patched_tpl, ensure_ascii=False).replace("</", "<\\/")
+    decoded = decoded[:content_start] + "\n" + new_tpl_json + "\n  " + decoded[content_end:]
+    return decoded
+
+
+_APPCS_IFRAME_RE = re.compile(
+    r'(<iframe\s+id="app-cs"[^>]*\bsrcdoc=")([^"]*)(")',
+    re.DOTALL,
+)
+
+
+def _build_patched_bundle() -> str:
+    """Read the Sukabot Suite shell and apply structural patches to app-cs.
+
+    Cached per UTC day so the date pivot stays current without re-parsing the
+    7 MB suite on every request. The cached HTML still contains
+    DATA_PLACEHOLDER / SUBMAP_PLACEHOLDER — those are substituted per request.
+    """
+    import datetime as _dt
+
+    today = _dt.date.today().isoformat()
+    if _PATCHED_BUNDLE_CACHE["date"] == today and _PATCHED_BUNDLE_CACHE["html"]:
+        return _PATCHED_BUNDLE_CACHE["html"]
+
+    with open(SUITE_HTML_PATH, "r", encoding="utf-8") as f:
+        suite_html = f.read()
+
+    m = _APPCS_IFRAME_RE.search(suite_html)
+    if not m:
+        logging.warning("app-cs iframe not found in %s — serving as-is", SUITE_HTML_PATH)
+        _PATCHED_BUNDLE_CACHE.update(date=today, html=suite_html)
+        return suite_html
+
+    decoded = html.unescape(m.group(2))
+    patched_decoded = _patch_appcs_srcdoc(decoded, today)
+    re_encoded = html.escape(patched_decoded, quote=True)
+    new_suite = suite_html[: m.start(2)] + re_encoded + suite_html[m.end(2):]
+
+    _PATCHED_BUNDLE_CACHE.update(date=today, html=new_suite)
+    logging.info("Sukabot Suite bundle patched (date pivot=%s)", today)
+    return new_suite
+
+
+def _encode_for_srcdoc_placeholder(json_text: str) -> str:
+    """Encode a JSON literal so it can replace a placeholder inside the
+    HTML-entity-encoded JSON-encoded template inside the iframe srcdoc.
+
+    Two transforms: first emulate JSON-encoding as if embedded in a JSON
+    string (so ``"`` becomes ``\\"``); then HTML-entity-encode (so ``\\"``
+    becomes ``\\&quot;``). When the browser HTML-decodes the srcdoc and JSON
+    parses the template, the JS source ends up with the original literal.
+    """
+    # Defensive: never let a value with </script> close our script tag.
+    safe = json_text.replace("</", "<\\/")
+    json_escaped = json.dumps(safe)[1:-1]  # strip the wrapping quotes
+    return html.escape(json_escaped, quote=True)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard(db: Session = Depends(get_db)):
-    """Serves the standalone CS Chatbot Dashboard bundle with REAL ticket data injected.
+    """Serves the Sukabot Suite shell with real ticket data injected into the
+    CS Chatbot Dashboard iframe (app-cs).
 
-    The React bundle reads ``window.__INJECTED_TICKETS`` first and falls back
-    to its mock generator only when that's missing. We inject before the
-    bundler's loader runs (which fires on DOMContentLoaded); the loader uses
-    ``documentElement.replaceWith`` rather than ``document.open()``, so our
-    ``window`` mutation survives the swap and the inner React app sees it.
-
-    We also rewrite the bundle's hardcoded "today" (2026-05-22) to the real
-    current date so the 30-day line chart shows real tickets.
+    The inner App() reads ``window.__INJECTED_TICKETS`` first and falls back
+    to the bundle's mock TICKETS only when the array is empty. We inject the
+    real data per request via a placeholder substitution against the cached
+    daily-patched suite HTML.
     """
-    html = _build_patched_bundle()
-    # Bundle structure changes whenever we tweak the patcher. Disable browser
-    # caching so a stale copy doesn't render against a fresh manifest.
+    suite_html = _build_patched_bundle()
     no_cache = {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
@@ -514,10 +506,8 @@ async def serve_dashboard(db: Session = Depends(get_db)):
         logging.exception("Failed to load tickets for bundle injection: %s", e)
         bundle_data = []
 
-    # Derive a subTopic -> topic map from the real tickets. The bundle's
-    # TopicView falls back to a hardcoded TOPIC_TREE for reverse lookup, which
-    # doesn't contain our sub-topic slugs — every real sub-topic ends up
-    # bucketed as "Other" without this override.
+    # subTopic → topic fallback map (covers slugs not in the bundle's
+    # hardcoded TOPIC_TREE). Harmless if the new bundle doesn't consult it.
     sub_to_topic: dict[str, str] = {}
     for tk in bundle_data:
         sub = tk.get("subTopic")
@@ -526,29 +516,15 @@ async def serve_dashboard(db: Session = Depends(get_db)):
             sub_to_topic[sub] = top
 
     data_json = json.dumps(bundle_data, ensure_ascii=False, default=str)
-    sub_map_json = json.dumps(sub_to_topic, ensure_ascii=False)
-    safe = data_json.replace("</", "<\\/")  # never close the script prematurely
-    safe_map = sub_map_json.replace("</", "<\\/")
-    injection = (
-        "<script>(function(){"
-        f"var raw = {safe};"
-        "raw.forEach(function(t){ t.created = new Date(t.created); });"
-        "window.__INJECTED_TICKETS = raw;"
-        f"window.__SUBTOPIC_TO_TOPIC = {safe_map};"
-        "})();</script>"
+    submap_json = json.dumps(sub_to_topic, ensure_ascii=False)
+
+    final_html = (
+        suite_html
+        .replace(DATA_PLACEHOLDER, _encode_for_srcdoc_placeholder(data_json), 1)
+        .replace(SUBMAP_PLACEHOLDER, _encode_for_srcdoc_placeholder(submap_json), 1)
     )
 
-    # Insert immediately after the opening <head> tag so it runs before any
-    # other script in the page.
-    import re as _re
-    m = _re.search(r"<head[^>]*>", html, _re.IGNORECASE)
-    if not m:
-        return HTMLResponse(content=html)  # malformed; serve as-is
-    insert_at = m.end()
-    return HTMLResponse(
-        html[:insert_at] + injection + html[insert_at:],
-        headers=no_cache,
-    )
+    return HTMLResponse(content=final_html, headers=no_cache)
 
 
 @app.get("/dashboard-live", response_class=HTMLResponse)
@@ -560,9 +536,22 @@ async def serve_dashboard_live():
 
 @app.get("/dashboard-raw", response_class=HTMLResponse)
 async def serve_dashboard_raw():
-    """Original unpatched standalone bundle — for diagnosing whether 404 noise
-    is caused by our patches or by the bundle itself."""
-    with open("CS Chatbot Dashboard _standalone_.html", "r", encoding="utf-8") as f:
+    """Sukabot Suite shell with no patches or data injection."""
+    with open(SUITE_HTML_PATH, "r", encoding="utf-8") as f:
+        return HTMLResponse(
+            content=f.read(),
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+
+@app.get("/dashboard-legacy", response_class=HTMLResponse)
+async def serve_dashboard_legacy():
+    """Previous CS Chatbot Dashboard standalone bundle (pre-Sukabot Suite)."""
+    with open(LEGACY_BUNDLE_PATH, "r", encoding="utf-8") as f:
         return HTMLResponse(
             content=f.read(),
             headers={
