@@ -482,7 +482,23 @@ def _encode_for_srcdoc_placeholder(json_text: str) -> str:
     return html.escape(json_escaped, quote=True)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
+def root():
+    # The dashboard UI now lives in the Next.js app (port 3000).
+    # Legacy HTML dashboards remain available at the /dashboard-* routes.
+    return {
+        "service": "esb-chatbot backend",
+        "ui": "http://localhost:3000",
+        "legacy_dashboards": [
+            "/dashboard-suite",
+            "/dashboard-raw",
+            "/dashboard-legacy",
+            "/dashboard-live",
+        ],
+    }
+
+
+@app.get("/dashboard-suite", response_class=HTMLResponse)
 async def serve_dashboard(db: Session = Depends(get_db)):
     """Serves the Sukabot Suite shell with real ticket data injected into the
     CS Chatbot Dashboard iframe (app-cs).
