@@ -46,3 +46,6 @@ CS Chatbot Dashboard _standalone_.html
 _*.md
 _*.txt
 _*.xml
+# Decoded Suite extraction artifacts (reference only, derived from the bundle)
+_src_*.jsx
+_tpl_*.html
