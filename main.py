@@ -884,6 +884,52 @@ def agents_workload(db: Session = Depends(get_db)):
     )
 
 
+# --- Web chat (Sukalapor, Phase 3) -----------------------------------------
+# Reuse the same conversational agent that drives the Telegram bot, but with a
+# web-namespaced session id so web sessions never collide with Telegram chat ids.
+
+def _web_session_id(session_id: str) -> str:
+    return f"web:{session_id}"
+
+
+@app.post("/api/chat")
+def web_chat(payload: dict, db: Session = Depends(get_db)):
+    """Drive one turn of the support agent for the web client.
+
+    Body: {session_id, message}. Returns {messages:[{type,text,options?}],
+    ticket_id?} — the bubble adapter (lib/chat.ts) renders `messages`.
+    """
+    payload = payload or {}
+    session_id = payload.get("session_id")
+    message = payload.get("message", "")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+
+    response = process_message(_web_session_id(session_id), message)
+
+    ticket_id = None
+    if response.get("type") == "ticket_form":
+        # Persist the ticket exactly like the Telegram path does.
+        ticket = _persist_ticket_from_response(response, _web_session_id(session_id), db)
+        ticket_id = ticket.id
+
+    msg = {"type": response.get("type", "message"), "text": response.get("text", "")}
+    if response.get("options"):
+        msg["options"] = response["options"]
+    return {"messages": [msg], "ticket_id": ticket_id}
+
+
+@app.post("/api/chat/reset")
+def web_chat_reset(payload: dict):
+    """Clear a web chat session ("Mulai ulang chat")."""
+    payload = payload or {}
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    SESSION_STATE.pop(_web_session_id(session_id), None)
+    return {"ok": True}
+
+
 @app.delete("/api/tickets/{ticket_id}")
 def delete_ticket(ticket_id: int, db: Session = Depends(get_db)):
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
@@ -892,6 +938,35 @@ def delete_ticket(ticket_id: int, db: Session = Depends(get_db)):
     db.delete(ticket)
     db.commit()
     return {"message": "Deleted successfully"}
+
+def _persist_ticket_from_response(response: dict, chat_id: str, db: Session) -> Ticket:
+    """Create a Ticket row from an agent ``ticket_form`` response.
+
+    Shared by the Telegram webhook and the web /api/chat endpoint so both
+    channels persist tickets identically (PRD US4).
+    """
+    t = Ticket(
+        ticket_number=response["ticket_number"],
+        name=response.get("name") or "",
+        phone_number=response.get("phone") or "",
+        company_name=response.get("company") or "",
+        branch_name=response.get("branch") or "",
+        chat_id=str(chat_id),
+        issue_category=response.get("category", "Unknown"),
+        sub_topic=response.get("sub_topic", ""),
+        issue_detail=response.get("issue_detail", ""),
+        chat_history=response.get("chat_history", ""),
+        steps_attempted=response.get("steps_attempted", ""),
+        attachments=json.dumps(response.get("attachments", [])),
+        routed_queue=response.get("routed_queue", ""),
+        confidence_score=response.get("confidence"),
+        status="Open",
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return t
+
 
 # --- Telegram Webhook Endpoint ---
 def send_telegram_message(chat_id: int, response: dict, user_info: dict | None = None):
@@ -909,28 +984,9 @@ def send_telegram_message(chat_id: int, response: dict, user_info: dict | None =
         httpx.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
     elif response["type"] == "ticket_form":
         # PRD US4 — persist the ticket with manual + auto-filled fields.
-        attachments_json = json.dumps(response.get("attachments", []))
         db = SessionLocal()
         try:
-            t = Ticket(
-                ticket_number=response["ticket_number"],
-                name=response.get("name") or "",
-                phone_number=response.get("phone") or "",
-                company_name=response.get("company") or "",
-                branch_name=response.get("branch") or "",
-                chat_id=str(chat_id),
-                issue_category=response.get("category", "Unknown"),
-                sub_topic=response.get("sub_topic", ""),
-                issue_detail=response.get("issue_detail", ""),
-                chat_history=response.get("chat_history", ""),
-                steps_attempted=response.get("steps_attempted", ""),
-                attachments=attachments_json,
-                routed_queue=response.get("routed_queue", ""),
-                confidence_score=response.get("confidence"),
-                status="Open",
-            )
-            db.add(t)
-            db.commit()
+            _persist_ticket_from_response(response, str(chat_id), db)
         finally:
             db.close()
         httpx.post(
