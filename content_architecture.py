@@ -210,10 +210,14 @@ def match_ca(query: str, category: str | None = None, k: int = 3) -> list[dict]:
     for e in entries:
         score = 0.0
         for kw in e["keywords"]:
-            if not kw:
+            nkw = _normalize(kw)
+            if not nkw:
                 continue
-            if _normalize(kw) in q:
-                score += 3.0
+            if nkw in q:
+                # Multi-word / long trigger phrases are specific, strong signals.
+                # Single short words (e.g. "cara", "menu", "OZE") are generic and
+                # match too broadly, so they only get a weak weight on their own.
+                score += 3.0 if (" " in nkw or len(nkw) >= 10) else 1.0
         for tok in _tokens(e["predefined"]):
             if tok in q_tokens:
                 score += 1.0
