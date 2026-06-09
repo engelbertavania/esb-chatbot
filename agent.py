@@ -146,12 +146,16 @@ def _build_classifier():
 
     use_vertex = has_vertex and (prefer_vertex or not has_gemini_api)
 
+    # Fail fast: cap retries + per-request timeout so a depleted-quota (429) or
+    # slow call falls through to the local fallback in a couple of seconds
+    # instead of the client's default ~30-60s exponential-backoff storm.
     if use_vertex:
         llm = ChatVertexAI(
             model_name="gemini-2.5-flash",
             temperature=0.0,
             project=os.environ["GOOGLE_CLOUD_PROJECT"],
             location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            max_retries=1,
         )
         structured = llm.with_structured_output(Classification)
         logger.info("Classifier: ChatVertexAI (project=%s).",
@@ -159,7 +163,9 @@ def _build_classifier():
         return _classifier_prompt | structured, llm
 
     if has_gemini_api:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash", temperature=0.0, max_retries=1, timeout=15,
+        )
         structured = llm.with_structured_output(Classification)
         logger.info("Classifier: ChatGoogleGenerativeAI.")
         return _classifier_prompt | structured, llm
@@ -848,9 +854,12 @@ def process_message(chat_id: str, text: str) -> dict:
         if candidates:
             return _present_low_conf(session, candidates[:LOW_CONF_SUGGESTION_COUNT], raw)
         text_out = (
-            "Saya belum yakin memahami kendala Anda. Bisa berikan detail lebih "
-            "spesifik — misalnya nama menu, pesan error, atau langkah yang "
-            "sudah Anda lakukan?"
+            "Halo! Boleh ceritakan kendalanya sedikit lebih jelas?\n"
+            "Contohnya:\n"
+            "• \"Foto menu tidak muncul\"\n"
+            "• \"Pesanan tidak masuk ke POS\"\n"
+            "• \"QR tidak bisa di-scan\"\n"
+            "Saya bantu carikan solusinya. 🙏"
         )
         _record_turn(session, "assistant", text_out)
         return {"type": "message", "text": text_out}
