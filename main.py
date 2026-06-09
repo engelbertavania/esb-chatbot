@@ -14,7 +14,7 @@ import re
 import httpx
 import os
 
-from database import engine, SessionLocal, Base, Ticket
+from database import engine, SessionLocal, Base, Ticket, CSATRating
 from agent import process_message, SESSION_STATE, _record_turn, _fresh_session
 from rag import vertex_search_available
 
@@ -623,6 +623,44 @@ def read_tickets(skip: int = 0, limit: int = 100, db: Session = Depends(get_db))
         .all()
     )
     return [_ticket_to_dict(t) for t in tickets]
+
+
+def _csat_to_dict(c: CSATRating) -> dict:
+    return {
+        "id": c.id,
+        "chat_id": c.chat_id,
+        "rating": c.rating,
+        "category": c.category,
+        "sub_topic": c.sub_topic,
+        "resolved_via": c.resolved_via,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
+@app.get("/api/csat")
+def read_csat(skip: int = 0, limit: int = 500, db: Session = Depends(get_db)):
+    """CSAT rating rows for the dashboard's CSAT metric (Phase 1).
+
+    Backed by the ``csat_ratings`` table the agent writes on resolution. The CS
+    dashboard joins these to tickets by ``chat_id`` to surface a real CSAT score.
+    """
+    rows = (
+        db.query(CSATRating)
+        .order_by(CSATRating.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [_csat_to_dict(c) for c in rows]
+
+
+@app.get("/api/csat/summary")
+def read_csat_summary(db: Session = Depends(get_db)):
+    """Aggregate CSAT: average rating (1 decimal) and number of ratings."""
+    ratings = [c.rating for c in db.query(CSATRating.rating).all() if c.rating is not None]
+    count = len(ratings)
+    average = round(sum(ratings) / count, 1) if count else None
+    return {"average": average, "count": count}
 
 
 # Cache the Telegram file_path lookups in-process. Each entry: file_id -> path.
