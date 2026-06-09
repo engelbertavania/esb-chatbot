@@ -79,6 +79,10 @@ ROUTING_MATRIX: dict[str, str] = {
 SENTINEL_TOPICS = ("Out of Scope", "Low Confidence")
 CONFIDENCE_THRESHOLD = 70           # AC1.9
 SESSION_TIMEOUT_SECONDS = 30 * 60   # AC1.14 — 30 minutes
+# A CA match scores +3.0 per curated trigger phrase that appears in the message.
+# >= 3.0 means at least one trigger phrase hit -> serve the CA response directly
+# (no LLM). Keeps replies instant and quota-independent.
+CA_KEYWORD_THRESHOLD = 3.0
 MAX_UNRESOLVED_ATTEMPTS = 3         # AC2.3
 LOW_CONF_SUGGESTION_COUNT = 3       # AC1.9.1 — "2-3 suggested categories"
 
@@ -833,7 +837,16 @@ def process_message(chat_id: str, text: str) -> dict:
         session["ticket_form"]["branch"] = raw
         return _finalize_ticket(session)
 
-    # ---- IDLE — fresh issue. Classify and route. ----
+    # ---- IDLE — fresh issue. ----
+    # Content Architecture FIRST: if the message hits a curated CA trigger
+    # phrase, serve the approved CA response immediately — no LLM call. This is
+    # instant (no quota/latency) and uses the exact wording from
+    # "Content architecture V.4.xlsx". The LLM is only consulted when no CA
+    # trigger matches.
+    ca_hits = match_ca(raw)
+    if ca_hits and ca_hits[0]["match_score"] >= CA_KEYWORD_THRESHOLD:
+        return _present_specific_ca(session, ca_hits[0])
+
     intent = classify_intent(raw)
     category = intent["category"]
     confidence = intent["confidence"]
