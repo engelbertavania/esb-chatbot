@@ -34,6 +34,7 @@ from typing import Optional
 
 from rag import retrieve_troubleshooting
 from content_architecture import (
+    load_ca,
     match_ca,
     format_response,
     entries_in_category,
@@ -668,6 +669,27 @@ def _present_predefined_menu(session: dict, category: str, query: str, confidenc
     }
 
 
+def _present_all_predefined(session: dict) -> dict:
+    """Every incoming chat: present the FULL predefined-issue list (CA column A)
+    so the merchant taps the exact issue and gets its column-D response. No LLM,
+    no keyword guessing — deterministic and straight from the Excel."""
+    entries = load_ca()
+    choices = [e["predefined"] for e in entries]
+    session.update({
+        "state": "CHOOSING_PREDEFINED",
+        "topic": "",
+        "original_query": "",
+        "confidence": 100,
+        "predefined_choices": choices,
+    })
+    text = (
+        f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
+        "Silakan pilih kendala yang paling sesuai dengan masalah Anda:"
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "question", "text": text, "options": choices}
+
+
 def _present_category_menu(session: dict) -> dict:
     """First-contact menu: list the CA categories (column-A issues are grouped
     under these 10 categories). Merchant picks one to drill into its issues."""
@@ -748,7 +770,7 @@ def process_message(chat_id: str, text: str) -> dict:
     if raw.lower() in ("/start", "/help"):
         SESSION_STATE[chat_id] = _fresh_session()
         session = SESSION_STATE[chat_id]
-        return _present_category_menu(session)
+        return _present_all_predefined(session)
 
     _record_turn(session, "user", raw)
     msg = raw.lower()
@@ -770,19 +792,6 @@ def process_message(chat_id: str, text: str) -> dict:
             "text": nudge,
             "options": ["1", "2", "3", "4", "5"],
         }
-
-    # ---- MENU_CATEGORY — first-contact category picker ----
-    if state == "MENU_CATEGORY":
-        cats = session.get("menu_categories", [])
-        match = next((c for c in cats if c.lower() == msg), None)
-        if match:
-            return _present_category_issues(session, match)
-        # Typed free text instead of a button: jump straight to the answer if it
-        # hits a CA trigger phrase, otherwise re-show the category menu.
-        ca_hits = match_ca(raw)
-        if ca_hits and ca_hits[0]["match_score"] >= CA_KEYWORD_THRESHOLD:
-            return _present_specific_ca(session, ca_hits[0])
-        return _present_category_menu(session)
 
     # ---- TROUBLESHOOTING — sequential Yes/No per step (US2) ----
     if state == "TROUBLESHOOTING":
@@ -837,8 +846,8 @@ def process_message(chat_id: str, text: str) -> dict:
                 session.get("confidence", 0),
             )
         if "lainnya" in msg or "ulang" in msg or "jelaskan" in msg:
-            return _present_category_menu(session)
-        # Free text → reclassify from scratch.
+            return _present_all_predefined(session)
+        # Anything else → re-show the predefined list.
         session["state"] = "IDLE"
         # fall through to IDLE handling
 
@@ -870,39 +879,8 @@ def process_message(chat_id: str, text: str) -> dict:
         session["ticket_form"]["branch"] = raw
         return _finalize_ticket(session)
 
-    # ---- IDLE — fresh issue. ----
-    # Content Architecture FIRST: if the message hits a curated CA trigger
-    # phrase, serve the approved CA response immediately — no LLM call. This is
-    # instant (no quota/latency) and uses the exact wording from
-    # "Content architecture V.4.xlsx". The LLM is only consulted when no CA
-    # trigger matches.
-    ca_hits = match_ca(raw)
-    if ca_hits and ca_hits[0]["match_score"] >= CA_KEYWORD_THRESHOLD:
-        return _present_specific_ca(session, ca_hits[0])
-
-    intent = classify_intent(raw)
-    category = intent["category"]
-    confidence = intent["confidence"]
-
-    # AC1.11 — out-of-scope rejection.
-    if category == "Out of Scope":
-        text_out = (
-            "Mohon maaf, saya hanya dapat membantu kendala operasional produk "
-            "ESB Order (menu, payment, push to POS, aktivasi, dsb). Silakan "
-            "ajukan pertanyaan terkait sistem kami."
-        )
-        _record_turn(session, "assistant", text_out)
-        return {"type": "message", "text": text_out}
-
-    # AC1.9 / AC1.9.1 — low confidence path.
-    if category == "Low Confidence":
-        candidates = intent.get("candidates") or []
-        if candidates:
-            return _present_low_conf(session, candidates[:LOW_CONF_SUGGESTION_COUNT], raw)
-        # Couldn't understand the free text → offer the predefined category menu.
-        return _present_category_menu(session)
-
-    # Happy path: confident category → present the predefined drill-down
-    # menu so the merchant picks the specific issue, then we play back the
-    # exact CA response for it (PRD AC1.3 + AC1.4).
-    return _present_predefined_menu(session, category, raw, confidence)
+    # ---- IDLE / any fresh message ----
+    # Every incoming chat shows the full predefined issue list (CA column A).
+    # The merchant picks one and gets that issue's exact column-D response.
+    # Deterministic, no LLM, no keyword guessing.
+    return _present_all_predefined(session)
