@@ -49,3 +49,7 @@ _*.xml
 # Decoded Suite extraction artifacts (reference only, derived from the bundle)
 _src_*.jsx
 _tpl_*.html
+
+# Detached backend logs
+backend.log
+backend.err.log
