@@ -38,6 +38,7 @@ from content_architecture import (
     format_response,
     entries_in_category,
     find_by_predefined,
+    list_categories,
     MODEL_NAME,
 )
 
@@ -667,6 +668,38 @@ def _present_predefined_menu(session: dict, category: str, query: str, confidenc
     }
 
 
+def _present_category_menu(session: dict) -> dict:
+    """First-contact menu: list the CA categories (column-A issues are grouped
+    under these 10 categories). Merchant picks one to drill into its issues."""
+    cats = list_categories()
+    session.update({"state": "MENU_CATEGORY", "menu_categories": cats})
+    text = (
+        f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
+        "Silakan pilih kategori kendala Anda:"
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "question", "text": text, "options": cats}
+
+
+def _present_category_issues(session: dict, category: str) -> dict:
+    """List every predefined issue (CA column A) in the chosen category, so the
+    merchant can pick the exact one and get its column-D response."""
+    entries = entries_in_category(category)
+    choices = [e["predefined"] for e in entries]
+    if not choices:
+        return _present_category_menu(session)
+    session.update({
+        "state": "CHOOSING_PREDEFINED",
+        "topic": category,
+        "original_query": "",
+        "confidence": 100,
+        "predefined_choices": choices,
+    })
+    text = f"Kategori: {category}\n\nMana yang paling sesuai dengan kendala Anda?"
+    _record_turn(session, "assistant", text)
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
+
+
 def _present_specific_ca(session: dict, entry: dict) -> dict:
     """Lock in a specific CA response (after drill-down pick) and present it."""
     formatted = format_response(entry["response"])
@@ -715,17 +748,7 @@ def process_message(chat_id: str, text: str) -> dict:
     if raw.lower() in ("/start", "/help"):
         SESSION_STATE[chat_id] = _fresh_session()
         session = SESSION_STATE[chat_id]
-        welcome = (
-            f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
-            "Ada kendala apa yang sedang Anda alami? Jelaskan singkat ya — "
-            "misalnya:\n"
-            "• \"Foto menu tidak muncul setelah upload\"\n"
-            "• \"Pesanan tidak masuk ke POS\"\n"
-            "• \"QR tidak bisa di-scan customer\"\n\n"
-            "Saya akan bantu cari solusinya."
-        )
-        _record_turn(session, "assistant", welcome)
-        return {"type": "message", "text": welcome}
+        return _present_category_menu(session)
 
     _record_turn(session, "user", raw)
     msg = raw.lower()
@@ -747,6 +770,19 @@ def process_message(chat_id: str, text: str) -> dict:
             "text": nudge,
             "options": ["1", "2", "3", "4", "5"],
         }
+
+    # ---- MENU_CATEGORY — first-contact category picker ----
+    if state == "MENU_CATEGORY":
+        cats = session.get("menu_categories", [])
+        match = next((c for c in cats if c.lower() == msg), None)
+        if match:
+            return _present_category_issues(session, match)
+        # Typed free text instead of a button: jump straight to the answer if it
+        # hits a CA trigger phrase, otherwise re-show the category menu.
+        ca_hits = match_ca(raw)
+        if ca_hits and ca_hits[0]["match_score"] >= CA_KEYWORD_THRESHOLD:
+            return _present_specific_ca(session, ca_hits[0])
+        return _present_category_menu(session)
 
     # ---- TROUBLESHOOTING — sequential Yes/No per step (US2) ----
     if state == "TROUBLESHOOTING":
@@ -801,10 +837,7 @@ def process_message(chat_id: str, text: str) -> dict:
                 session.get("confidence", 0),
             )
         if "lainnya" in msg or "ulang" in msg or "jelaskan" in msg:
-            session["state"] = "IDLE"
-            text_out = "Baik, mohon jelaskan kendala Anda dengan lebih spesifik."
-            _record_turn(session, "assistant", text_out)
-            return {"type": "message", "text": text_out}
+            return _present_category_menu(session)
         # Free text → reclassify from scratch.
         session["state"] = "IDLE"
         # fall through to IDLE handling
@@ -866,16 +899,8 @@ def process_message(chat_id: str, text: str) -> dict:
         candidates = intent.get("candidates") or []
         if candidates:
             return _present_low_conf(session, candidates[:LOW_CONF_SUGGESTION_COUNT], raw)
-        text_out = (
-            "Halo! Boleh ceritakan kendalanya sedikit lebih jelas?\n"
-            "Contohnya:\n"
-            "• \"Foto menu tidak muncul\"\n"
-            "• \"Pesanan tidak masuk ke POS\"\n"
-            "• \"QR tidak bisa di-scan\"\n"
-            "Saya bantu carikan solusinya. 🙏"
-        )
-        _record_turn(session, "assistant", text_out)
-        return {"type": "message", "text": text_out}
+        # Couldn't understand the free text → offer the predefined category menu.
+        return _present_category_menu(session)
 
     # Happy path: confident category → present the predefined drill-down
     # menu so the merchant picks the specific issue, then we play back the
