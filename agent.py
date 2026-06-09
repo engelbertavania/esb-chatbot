@@ -669,25 +669,47 @@ def _present_predefined_menu(session: dict, category: str, query: str, confidenc
     }
 
 
-def _present_all_predefined(session: dict) -> dict:
-    """Every incoming chat: present the FULL predefined-issue list (CA column A)
-    so the merchant taps the exact issue and gets its column-D response. No LLM,
-    no keyword guessing — deterministic and straight from the Excel."""
-    entries = load_ca()
-    choices = [e["predefined"] for e in entries]
+RELEVANT_PREDEFINED_COUNT = 5  # how many matching issues to offer
+MIN_RELEVANCE_SCORE = 1.0      # below this, a CA entry isn't relevant enough
+
+
+def _ask_describe(session: dict) -> dict:
+    """Prompt the merchant to describe their issue so we can surface the
+    matching predefined issues."""
+    session["state"] = "IDLE"
+    text = (
+        f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
+        "Ada kendala apa yang sedang Anda alami? Jelaskan singkat ya, misalnya:\n"
+        "• \"Pesanan tidak masuk ke POS\"\n"
+        "• \"Upload foto menu\"\n"
+        "• \"Setting payment gateway\"\n\n"
+        "Nanti saya tampilkan kendala yang paling sesuai untuk Anda pilih."
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "message", "text": text}
+
+
+def _present_matching_predefined(session: dict, query: str) -> dict | None:
+    """Show the predefined issues (CA column A) most relevant to what the
+    merchant just described. Returns None when nothing is relevant enough."""
+    ranked = [e for e in match_ca(query, k=RELEVANT_PREDEFINED_COUNT)
+              if e["match_score"] >= MIN_RELEVANCE_SCORE]
+    if not ranked:
+        return None
+    choices = [e["predefined"] for e in ranked]
     session.update({
         "state": "CHOOSING_PREDEFINED",
-        "topic": "",
-        "original_query": "",
+        "topic": ranked[0].get("category", ""),
+        "original_query": query,
         "confidence": 100,
         "predefined_choices": choices,
     })
     text = (
-        f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
-        "Silakan pilih kendala yang paling sesuai dengan masalah Anda:"
+        "Berikut kendala yang paling sesuai dengan yang Anda alami — "
+        "silakan pilih yang paling tepat:"
     )
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": choices}
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
 
 
 def _present_category_menu(session: dict) -> dict:
@@ -770,7 +792,7 @@ def process_message(chat_id: str, text: str) -> dict:
     if raw.lower() in ("/start", "/help"):
         SESSION_STATE[chat_id] = _fresh_session()
         session = SESSION_STATE[chat_id]
-        return _present_all_predefined(session)
+        return _ask_describe(session)
 
     _record_turn(session, "user", raw)
     msg = raw.lower()
@@ -846,8 +868,8 @@ def process_message(chat_id: str, text: str) -> dict:
                 session.get("confidence", 0),
             )
         if "lainnya" in msg or "ulang" in msg or "jelaskan" in msg:
-            return _present_all_predefined(session)
-        # Anything else → re-show the predefined list.
+            return _ask_describe(session)
+        # Anything else → treat as a fresh description and re-match.
         session["state"] = "IDLE"
         # fall through to IDLE handling
 
@@ -879,8 +901,17 @@ def process_message(chat_id: str, text: str) -> dict:
         session["ticket_form"]["branch"] = raw
         return _finalize_ticket(session)
 
-    # ---- IDLE / any fresh message ----
-    # Every incoming chat shows the full predefined issue list (CA column A).
-    # The merchant picks one and gets that issue's exact column-D response.
-    # Deterministic, no LLM, no keyword guessing.
-    return _present_all_predefined(session)
+    # ---- IDLE — merchant described their issue ----
+    # Surface the predefined issues (CA column A) most relevant to their chat;
+    # they pick the exact one and get its column-D response. No LLM.
+    matched = _present_matching_predefined(session, raw)
+    if matched is not None:
+        return matched
+    # Nothing relevant enough — ask them to rephrase.
+    text_out = (
+        "Maaf, saya belum menemukan kendala yang cocok dengan pesan Anda.\n"
+        "Coba jelaskan dengan kata lain ya — misalnya \"pesanan tidak masuk POS\", "
+        "\"upload foto menu\", atau \"setting payment\"."
+    )
+    _record_turn(session, "assistant", text_out)
+    return {"type": "message", "text": text_out}
