@@ -1,8 +1,8 @@
 import config  # noqa: F401 — loads .env before any os.getenv reads
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 import datetime
 import logging
 import os
@@ -53,6 +53,32 @@ class Ticket(Base):
     # PRD Phase 1 additions.
     routed_queue = Column(String, index=True)   # AC4.4 — support queue label
     sub_topic = Column(String)                  # historical, kept for migrated rows
+    # Phase 2 (Ticket Monitoring) additions.
+    priority = Column(String)                   # High | Medium | Low | Compliment
+    assignee = Column(String)                   # current handler, e.g. "CC - Ayu Rahayu"
+    assign_to = Column(String)                  # escalation target
+
+    notes = relationship(
+        "TicketNote",
+        back_populates="ticket",
+        cascade="all, delete-orphan",
+        order_by="TicketNote.created_at",
+    )
+
+
+class TicketNote(Base):
+    """Phase 2 resolution-note timeline entry attached to a ticket."""
+    __tablename__ = "ticket_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), index=True)
+    type = Column(String)        # "IN PROGRESS" | "ESCALATED TO ANOTHER TEAM" | "FIXED"
+    text = Column(Text)
+    author = Column(String)
+    images = Column(Text)        # JSON array of attachment refs/URLs
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    ticket = relationship("Ticket", back_populates="notes")
 
 
 class CSATRating(Base):
@@ -89,6 +115,10 @@ def _ensure_schema() -> None:
         "confidence_score": "INTEGER",
         "routed_queue": "VARCHAR",
         "sub_topic": "VARCHAR",
+        # Phase 2 additions.
+        "priority": "VARCHAR",
+        "assignee": "VARCHAR",
+        "assign_to": "VARCHAR",
     }
     inspector = inspect(engine)
     if not inspector.has_table("tickets"):

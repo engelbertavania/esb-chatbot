@@ -14,7 +14,7 @@ import re
 import httpx
 import os
 
-from database import engine, SessionLocal, Base, Ticket, CSATRating
+from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote
 from agent import process_message, SESSION_STATE, _record_turn, _fresh_session
 from rag import vertex_search_available
 
@@ -609,7 +609,31 @@ def _ticket_to_dict(t: Ticket) -> dict:
         "routed_queue": t.routed_queue,
         "chat_id": t.chat_id,
         "confidence_score": t.confidence_score,
+        "priority": t.priority,
+        "assignee": t.assignee,
+        "assign_to": t.assign_to,
+        "notes": [_note_to_dict(n) for n in t.notes],
         "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+def _note_to_dict(n: TicketNote) -> dict:
+    images: list = []
+    if n.images:
+        try:
+            parsed = json.loads(n.images)
+            if isinstance(parsed, list):
+                images = parsed
+        except (ValueError, TypeError):
+            pass
+    return {
+        "id": n.id,
+        "ticket_id": n.ticket_id,
+        "type": n.type,
+        "text": n.text,
+        "author": n.author,
+        "images": images,
+        "created_at": n.created_at.isoformat() if n.created_at else None,
     }
 
 
@@ -742,6 +766,7 @@ _UI_TO_DB_STATUS = {
     "New": "Open",
     "In Progress": "In Progress",
     "Waiting": "Waiting",
+    "Escalated": "Escalated",
     "Resolved": "Resolved",
 }
 
@@ -761,6 +786,103 @@ async def set_ticket_status(
     ticket.status = db_status
     db.commit()
     return {"id": ticket_id, "ui_status": ui_status, "db_status": db_status}
+
+
+def _get_ticket_or_404(ticket_id: int, db: Session) -> Ticket:
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
+@app.post("/api/tickets/{ticket_id}/assign")
+def assign_ticket(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Set the current handler. Body: {"assignee": "CC - Ayu Rahayu"}."""
+    ticket = _get_ticket_or_404(ticket_id, db)
+    ticket.assignee = (payload or {}).get("assignee")
+    db.commit()
+    return _ticket_to_dict(ticket)
+
+
+@app.post("/api/tickets/{ticket_id}/escalate")
+def escalate_ticket(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Hand the ticket to an escalation target. Body: {"assign_to": "DEV - Immanuel"}."""
+    ticket = _get_ticket_or_404(ticket_id, db)
+    ticket.assign_to = (payload or {}).get("assign_to")
+    db.commit()
+    return _ticket_to_dict(ticket)
+
+
+@app.get("/api/tickets/{ticket_id}/notes")
+def list_ticket_notes(ticket_id: int, db: Session = Depends(get_db)):
+    ticket = _get_ticket_or_404(ticket_id, db)
+    return [_note_to_dict(n) for n in ticket.notes]
+
+
+@app.post("/api/tickets/{ticket_id}/notes")
+def add_ticket_note(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Append a resolution note. Body: {type, text, author, images?}."""
+    _get_ticket_or_404(ticket_id, db)
+    payload = payload or {}
+    if not (payload.get("text") or "").strip():
+        raise HTTPException(status_code=400, detail="text is required")
+    images = payload.get("images")
+    note = TicketNote(
+        ticket_id=ticket_id,
+        type=payload.get("type") or "IN PROGRESS",
+        text=payload["text"].strip(),
+        author=payload.get("author") or "Unknown",
+        images=json.dumps(images) if isinstance(images, list) else None,
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return _note_to_dict(note)
+
+
+@app.put("/api/tickets/{ticket_id}/notes/{note_id}")
+def edit_ticket_note(ticket_id: int, note_id: int, payload: dict, db: Session = Depends(get_db)):
+    note = (
+        db.query(TicketNote)
+        .filter(TicketNote.id == note_id, TicketNote.ticket_id == ticket_id)
+        .first()
+    )
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    payload = payload or {}
+    if "text" in payload:
+        note.text = (payload["text"] or "").strip()
+    if "type" in payload:
+        note.type = payload["type"]
+    if "images" in payload:
+        images = payload["images"]
+        note.images = json.dumps(images) if isinstance(images, list) else None
+    db.commit()
+    db.refresh(note)
+    return _note_to_dict(note)
+
+
+@app.get("/api/agents/workload")
+def agents_workload(db: Session = Depends(get_db)):
+    """Active/resolved ticket counts per handler (assignee, else routed_queue).
+
+    "Active" = not Resolved/Closed. Sorted by total desc. Powers the
+    AgentWorkloadDrawer.
+    """
+    rows: dict[str, dict] = {}
+    for t in db.query(Ticket).all():
+        agent = t.assignee or t.routed_queue
+        if not agent:
+            continue
+        bucket = rows.setdefault(agent, {"agent": agent, "active": 0, "resolved": 0})
+        if t.status in ("Resolved", "Closed"):
+            bucket["resolved"] += 1
+        else:
+            bucket["active"] += 1
+    return sorted(
+        rows.values(), key=lambda r: r["active"] + r["resolved"], reverse=True
+    )
+
 
 @app.delete("/api/tickets/{ticket_id}")
 def delete_ticket(ticket_id: int, db: Session = Depends(get_db)):
