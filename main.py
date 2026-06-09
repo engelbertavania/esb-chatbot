@@ -771,11 +771,47 @@ _UI_TO_DB_STATUS = {
 }
 
 
+_RESOLVED_STATES = ("Resolved", "Closed")
+
+
+def _telegram_enabled() -> bool:
+    return bool(TELEGRAM_TOKEN) and TELEGRAM_TOKEN != "mock_token"
+
+
+def _notify_ticket_resolved(ticket: Ticket, background_tasks: BackgroundTasks) -> bool:
+    """DM the merchant on Telegram that their ticket is solved.
+
+    Skipped (returns False) for web-chat tickets (chat_id like 'web:<uuid>'),
+    missing/non-numeric chat ids, or when no real bot token is configured.
+    """
+    chat_id = (ticket.chat_id or "").strip()
+    if not chat_id or chat_id.startswith("web:") or not chat_id.lstrip("-").isdigit():
+        return False
+    if not _telegram_enabled():
+        return False
+    label = ticket.ticket_number or f"#{ticket.id}"
+    text = (
+        f"Halo! Kabar baik — tiket Anda {label} sudah SELESAI ditangani. ✅\n\n"
+        "Kendala yang Anda laporkan telah kami selesaikan. Jika masih ada "
+        "kendala atau pertanyaan lanjutan, silakan balas pesan ini ya. "
+        "Terima kasih sudah menghubungi ESB Order Support! 🙏"
+    )
+    background_tasks.add_task(
+        send_telegram_message, int(chat_id), {"type": "message", "text": text}
+    )
+    return True
+
+
 @app.post("/api/tickets/{ticket_id}/status")
 async def set_ticket_status(
-    ticket_id: int, payload: dict, db: Session = Depends(get_db)
+    ticket_id: int, payload: dict, background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
-    """Kanban drop target — accepts {"status": "<ui status>"} and persists."""
+    """Kanban drop target — accepts {"status": "<ui status>"} and persists.
+
+    When a ticket transitions INTO a resolved state, the merchant who opened it
+    is notified on Telegram that the issue is solved.
+    """
     ui_status = (payload or {}).get("status")
     if not ui_status:
         raise HTTPException(status_code=400, detail="status is required")
@@ -783,9 +819,17 @@ async def set_ticket_status(
     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+
+    prev_status = ticket.status
     ticket.status = db_status
     db.commit()
-    return {"id": ticket_id, "ui_status": ui_status, "db_status": db_status}
+
+    # Only notify on the transition into resolved (not on repeated drops).
+    notified = False
+    if db_status in _RESOLVED_STATES and prev_status not in _RESOLVED_STATES:
+        notified = _notify_ticket_resolved(ticket, background_tasks)
+
+    return {"id": ticket_id, "ui_status": ui_status, "db_status": db_status, "merchant_notified": notified}
 
 
 def _get_ticket_or_404(ticket_id: int, db: Session) -> Ticket:
