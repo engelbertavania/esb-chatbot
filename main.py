@@ -5,7 +5,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-import asyncio
 import base64
 import contextlib
 import gzip
@@ -79,14 +78,10 @@ Base.metadata.create_all(bind=engine)
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start the idle-session reaper (defined below) so the bot can proactively
-    # check in on quiet customers and close stale chats.
-    task = asyncio.create_task(_session_reaper_loop())
-    logging.info("Idle session reaper started (every %ss).", REAPER_INTERVAL_SECONDS)
-    try:
-        yield
-    finally:
-        task.cancel()
+    # Idle nudge/auto-close now runs out-of-process via Cloud Scheduler -> POST
+    # /reap (see docs/superpowers/specs/2026-06-11-db-backed-reaper-design.md),
+    # so no in-process reaper task is started here.
+    yield
 
 
 app = FastAPI(title="AI Chatbot Backend Phase 1", lifespan=lifespan)
@@ -1134,64 +1129,7 @@ def _validate_attachment(att: dict, session_attachments: list[dict]) -> str | No
     return None
 
 
-# ── Idle session reaper (proactive check-in + graceful auto-close) ───────────
-# Telegram is one-directional from the customer's side — we only hear from them
-# on /webhook. To "ask if they're still there" and later close the chat, a
-# background loop scans the in-memory sessions and pushes messages out of band.
-REAPER_INTERVAL_SECONDS = 20  # how often to scan for idle sessions
-
-
-async def _send_async(chat_id: int, text: str) -> None:
-    """Fire a plain Telegram message from the async reaper without blocking the
-    event loop (send_telegram_message is sync httpx)."""
-    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "mock_token":
-        return  # no real token — nothing to deliver (e.g. local/dev)
-    try:
-        await asyncio.to_thread(send_telegram_message, chat_id, {"type": "message", "text": text})
-    except Exception as e:  # never let a send failure kill the reaper
-        logging.warning("reaper send to %s failed: %s", chat_id, e)
-
-
-async def _reap_idle_sessions() -> None:
-    """One pass: nudge sessions that have gone quiet, close the ones that stayed
-    quiet after the nudge. Web sessions (no push channel) are skipped."""
-    now = time.time()
-    for chat_id, session in list(SESSION_STATE.items()):
-        if not isinstance(chat_id, str) or chat_id.startswith("web:"):
-            continue
-        action = idle_action(session, now)
-        if action == "prompt":
-            session["followup_prompted"] = True
-            session["followup_prompted_at"] = now
-            msg = (
-                "Apakah masih ada yang bisa kami bantu? 🙏 Jika tidak ada balasan "
-                "beberapa saat lagi, sesi ini akan saya tutup. Anda bisa mulai lagi "
-                "kapan saja dengan mengirim pesan."
-            )
-            _record_turn(session, "assistant", msg)
-            await _send_async(int(chat_id), msg)
-        elif action == "close":
-            msg = (
-                "Sesi saya tutup dulu ya karena tidak ada balasan. Terima kasih sudah "
-                "menghubungi ESB Order 🙏 Kirim pesan kapan saja jika ada kendala lain."
-            )
-            await _send_async(int(chat_id), msg)
-            # Fresh session => the NEXT message is treated as a brand-new issue.
-            SESSION_STATE[chat_id] = _fresh_session()
-
-
-async def _session_reaper_loop() -> None:
-    while True:
-        try:
-            await asyncio.sleep(REAPER_INTERVAL_SECONDS)
-            await _reap_idle_sessions()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logging.warning("session reaper pass failed: %s", e)
-
-
-# Out-of-band idle-session messages — shared by the scheduled /reap pass.
+# Out-of-band idle-session messages — used by the scheduled /reap pass.
 FOLLOWUP_PROMPT_TEXT = (
     "Apakah masih ada yang bisa kami bantu? 🙏 Jika tidak ada balasan "
     "beberapa saat lagi, sesi ini akan saya tutup. Anda bisa mulai lagi "

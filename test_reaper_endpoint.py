@@ -226,3 +226,15 @@ def test_reap_closes_prompted_row_with_missing_timestamp(reap_client):
         assert db.get(ChatSession, "8005") is None
     finally:
         db.close()
+
+
+def test_in_memory_reaper_is_removed():
+    # The asyncio reaper is replaced by the scheduled /reap endpoint.
+    assert not hasattr(main, "_session_reaper_loop")
+    assert not hasattr(main, "_reap_idle_sessions")
+    assert not hasattr(main, "REAPER_INTERVAL_SECONDS")
+
+
+def test_app_still_boots_and_health_ok():
+    client = TestClient(main.app)   # lifespan startup must not raise
+    assert client.get("/health").status_code in (200, 503)
