@@ -1,0 +1,62 @@
+# gcloud upload-ignore for `gcloud run deploy --source .`
+#
+# IMPORTANT: when this file is ABSENT, gcloud falls back to .gitignore — which
+# excludes *.jsonl and would drop vertex_corpus.jsonl from the build context,
+# breaking `COPY vertex_corpus.jsonl` in the Dockerfile. This file exists so the
+# corpus (and the dashboard HTML) ARE uploaded while junk is still excluded.
+
+.git/
+.gitignore
+.gcloudignore
+
+# Python / virtualenv
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Tooling / IDE
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Frontend deploys separately on Vercel
+frontend/
+
+# Secrets — env vars are injected by Cloud Run, never baked into the image
+.env
+.env.*
+*.pem
+*.key
+
+# Tests & one-off dev / probe scripts (not needed at runtime)
+test_*.py
+_*.py
+smoke_test.py
+check_image_flow.py
+verify_patch.py
+extract_bundle.py
+extract_schema.py
+patch_html.py
+build_index.py
+list_gemini_models.py
+prepare_vertex_search.py
+
+# Logs & local DB
+*.log
+tickets.db
+faiss_index/
+
+# Docs & source spreadsheets (runtime ships the pre-built JSONL corpus)
+*.md
+*.docx
+*.xlsx
+docs/
+*.skill
+
+# Local launcher scripts
+*.ps1
