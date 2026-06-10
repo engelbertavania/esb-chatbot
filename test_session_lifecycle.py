@@ -181,7 +181,7 @@ def test_reaper_prompts_then_closes_then_resets(reap_client):
     sent.clear()
     body2 = client.post("/reap", headers=headers).json()
     assert body2["closed"] == 1
-    assert any("tutup" in m["text"].lower() for m in sent)
+    assert any("karena tidak ada balasan" in m["text"].lower() for m in sent)
 
     # In-memory state is reset to a fresh idle session.
     assert main.SESSION_STATE["555"]["state"] == "IDLE"

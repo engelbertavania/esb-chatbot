@@ -196,7 +196,7 @@ def test_reap_closes_2_minutes_after_nudge(reap_client):
     main.SESSION_STATE["8003"] = {"state": "WRAP_UP"}
     body = client.post("/reap", headers=headers).json()
     assert body["closed"] == 1
-    assert "tutup" in sent[0]["text"].lower()
+    assert "karena tidak ada balasan" in sent[0]["text"].lower()
     db = SessionLocal()
     try:
         assert db.get(ChatSession, "8003") is None     # row deleted on close
@@ -220,7 +220,7 @@ def test_reap_closes_prompted_row_with_missing_timestamp(reap_client):
     _seed("8005", idle_min=20, prompted=True, prompted_min_ago=None)
     body = client.post("/reap", headers=headers).json()
     assert body["closed"] == 1
-    assert "tutup" in sent[0]["text"].lower()
+    assert "karena tidak ada balasan" in sent[0]["text"].lower()
     db = SessionLocal()
     try:
         assert db.get(ChatSession, "8005") is None
