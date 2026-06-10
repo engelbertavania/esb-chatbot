@@ -1288,6 +1288,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     if chat_id is None:
         return {"status": "ok"}
 
+    # Mirror liveness to the DB so the scheduled /reap can nudge/close this
+    # session even after in-memory SESSION_STATE is lost on instance recycle.
+    _touch_session_liveness(str(chat_id))
+
     # --- Attachment-only path (US3 / AC1.12) -------------------------------
     if attachment and not text:
         session = SESSION_STATE.setdefault(str(chat_id), _fresh_session())

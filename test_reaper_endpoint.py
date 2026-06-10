@@ -94,3 +94,34 @@ def test_touch_session_liveness_skips_web_sessions():
         assert db.get(ChatSession, "web:abc") is None
     finally:
         db.close()
+
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def webhook_client(monkeypatch):
+    monkeypatch.setattr(main, "send_telegram_message", lambda *a, **k: None)
+    monkeypatch.setattr(main, "process_message",
+                        lambda chat_id, text: {"type": "message", "text": "ok"})
+    main.SESSION_STATE.clear()
+    _clear_sessions()
+    client = TestClient(main.app)
+    headers = {"X-Telegram-Bot-Api-Secret-Token": main.TELEGRAM_WEBHOOK_SECRET}
+    yield client, headers
+    _clear_sessions()
+
+
+def test_webhook_turn_records_liveness(webhook_client):
+    client, headers = webhook_client
+    client.post("/webhook", headers=headers,
+                json={"message": {"chat": {"id": 9200}, "text": "halo"}})
+    db = SessionLocal()
+    try:
+        row = db.get(ChatSession, "9200")
+        assert row is not None
+        assert row.has_history is True
+        assert row.followup_prompted is False
+    finally:
+        db.close()
