@@ -81,6 +81,14 @@ ROUTING_MATRIX: dict[str, str] = {
 SENTINEL_TOPICS = ("Out of Scope", "Low Confidence")
 CONFIDENCE_THRESHOLD = 70           # AC1.9
 SESSION_TIMEOUT_SECONDS = 30 * 60   # AC1.14 — 30 minutes
+# Proactive follow-up + graceful auto-close. After a ticket is created (or an
+# issue resolved) the session stays on the SAME issue (state WRAP_UP) instead of
+# immediately treating the next message as a brand-new issue. If the customer
+# then goes quiet, the reaper (main.py) nudges once ("masih ada yang bisa
+# dibantu?") and, after further silence, closes the session — so the NEXT message
+# starts fresh. Tunable; kept short enough to demo live.
+FOLLOWUP_PROMPT_AFTER_SECONDS = 8 * 60   # silence before the check-in nudge (nudge@8m, close@10m)
+FOLLOWUP_CLOSE_AFTER_SECONDS = 2 * 60    # further silence (post-nudge) before close
 # A CA match scores +3.0 per curated trigger phrase that appears in the message.
 # >= 3.0 means at least one trigger phrase hit -> serve the CA response directly
 # (no LLM). Keeps replies instant and quota-independent.
@@ -367,6 +375,165 @@ def _record_turn(session: dict, role: str, text: str) -> None:
     session["last_activity"] = _now()
 
 
+def idle_action(session: dict, now: float) -> str | None:
+    """Decide what the reaper should do for an idle session.
+
+    Returns ``"prompt"`` (send the "still there?" check-in), ``"close"`` (no
+    reply after the check-in — end the session), or ``None`` (leave it alone).
+    Pure/deterministic so it's unit-testable without timers. Sessions with no
+    conversation yet are never reaped.
+    """
+    if not session.get("chat_history"):
+        return None
+    if session.get("followup_prompted"):
+        prompted_at = session.get("followup_prompted_at", now)
+        return "close" if now - prompted_at > FOLLOWUP_CLOSE_AFTER_SECONDS else None
+    idle = now - session.get("last_activity", now)
+    return "prompt" if idle > FOLLOWUP_PROMPT_AFTER_SECONDS else None
+
+
+# ── Customer de-escalation (calm a furious customer) ─────────────────────────
+# Purpose-built to be keyword/heuristic based: zero LLM cost and quota-independent
+# (Gemini credits don't matter), so it always fires even when the model is down.
+# Tuned for Bahasa Indonesia (the bot's primary language) plus common English.
+
+# Strong profanity — matched as whole tokens so we don't trip on substrings.
+_ANGER_PROFANITY = {
+    "anjing", "anjg", "bangsat", "bgst", "brengsek", "goblok", "tolol", "bego",
+    "kampret", "sialan", "tai", "taik", "kontol", "memek", "ngentot", "bajingan",
+    "fuck", "fucking", "shit", "damn", "asshole", "bullshit", "wtf",
+}
+
+# Frustration / complaint phrases — matched as substrings (some are multi-word).
+# Deliberately excludes bare "lama" (would hit "selamat") — uses "lambat" /
+# "lama banget" instead.
+_ANGER_TERMS = (
+    "marah", "kesal", "kesel", "kecewa", "parah", "payah", "buruk", "jelek",
+    "lambat", "lama banget", "lelet", "menyebalkan", "nyebelin", "muak", "geram",
+    "emosi", "frustrasi", "komplain", "ga becus", "gak becus", "tidak becus",
+    "tidak profesional", "gak profesional", "ga jelas", "gak jelas",
+    "gimana sih", "gmn sih", "useless", "terrible", "worst", "ridiculous",
+    "unacceptable", "angry", "furious", "frustrated", "fed up",
+)
+
+_EXCLAIM_RE = re.compile(r"!{3,}")
+_TOKEN_RE = re.compile(r"[a-z]+")
+
+# Empathetic, calming replies sent ahead of the normal bot response. Acknowledge
+# the feeling, take ownership, and steer back to resolving the issue.
+CALMING_MESSAGES = (
+    "Mohon maaf yang sebesar-besarnya atas ketidaknyamanan ini 🙏 Saya benar-benar "
+    "memahami kekecewaan Anda, dan saya di sini untuk membantu menyelesaikannya "
+    "secepat mungkin. Boleh ceritakan kembali kendalanya supaya bisa langsung saya bantu?",
+    "Saya mengerti hal ini pasti sangat membuat frustrasi, dan saya minta maaf atas "
+    "pengalaman yang kurang menyenangkan ini 🙏 Tenang, kita selesaikan bersama. "
+    "Mohon jelaskan kendala Anda agar saya bisa segera menindaklanjutinya.",
+    "Maaf atas kerepotan yang Anda alami 🙏 Keluhan Anda sangat kami perhatikan dan "
+    "akan kami bantu sampai tuntas. Boleh dibantu jelaskan detail masalahnya?",
+)
+
+
+def _is_shouting(text: str) -> bool:
+    """True when the message is mostly uppercase letters (shouting)."""
+    letters = [c for c in text if c.isalpha()]
+    if len(letters) < 8:  # ignore short bursts like "OK" / "QR"
+        return False
+    uppers = sum(1 for c in letters if c.isupper())
+    return uppers / len(letters) >= 0.7
+
+
+def detect_anger(text: str) -> bool:
+    """Heuristic, LLM-free check for a furious/frustrated customer message."""
+    if not text:
+        return False
+    raw = text.strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if set(_TOKEN_RE.findall(low)) & _ANGER_PROFANITY:
+        return True
+    if any(term in low for term in _ANGER_TERMS):
+        return True
+    if _EXCLAIM_RE.search(raw):
+        return True
+    return _is_shouting(raw)
+
+
+def calming_message() -> str:
+    """Pick a calming reply to prepend before the normal bot response."""
+    return random.choice(CALMING_MESSAGES)
+
+
+# ── Off-script input during ticket-form collection ───────────────────────────
+# While collecting name/phone/company/branch the customer may push back or ask a
+# question ("kenapa butuh nomor HP saya?!") instead of giving the value. Detect
+# that and answer logically (explain WHY we ask, then re-ask) instead of storing
+# the question as the value or rejecting it as an invalid format.
+
+# Per-field reason + the question to re-ask. Keyed by collection state.
+_COLLECTION_FIELDS = {
+    "COLLECTING_NAME": {
+        "why": "Nama Anda kami butuhkan agar tim support tahu harus menyapa siapa dan mencocokkannya dengan akun Anda.",
+        "ask": "Boleh dibantu, dengan siapa saya berbicara?",
+    },
+    "COLLECTING_PHONE": {
+        "why": "Tenang, nomor HP hanya dipakai agar tim support bisa menghubungi Anda untuk menindaklanjuti tiket ini — tidak dibagikan ke pihak lain.",
+        "ask": "Boleh dibantu nomor HP yang bisa dihubungi? (contoh: 081234567890)",
+    },
+    "COLLECTING_COMPANY": {
+        "why": "Nama perusahaan/brand membantu kami menemukan akun dan konfigurasi outlet Anda.",
+        "ask": "Apa nama perusahaan / brand Anda?",
+    },
+    "COLLECTING_BRANCH": {
+        "why": "Nama outlet/cabang membantu tim mempersempit lokasi kendala dengan cepat.",
+        "ask": "Apa nama outlet / cabang Anda?",
+    },
+}
+
+# Words that signal a question/objection rather than the requested value. Kept
+# tight to avoid mistaking a real name/company for a question.
+_QUESTION_MARKERS = (
+    "kenapa", "mengapa", "knp", "ngapain", "buat apa", "untuk apa", "buat apaan",
+    "ga jelas", "privasi", "rahasia", "aman ga", "aman gak", "aman kah",
+    "why", "what for", "for what", "what do you", "why do you",
+)
+_REFUSAL_MARKERS = (
+    "ga mau", "gak mau", "nggak mau", "ngga mau", "tidak mau", "gamau", "gakmau",
+    "ga usah", "gak usah", "nggak usah", "tidak usah", "ga perlu", "gak perlu",
+    "tidak perlu", "ga kasih", "gak kasih", "ogah", "males", "malas",
+    "don't want", "dont want", "no need", "won't give", "wont give", "refuse",
+)
+
+
+def _looks_like_question_or_refusal(text: str) -> bool:
+    low = text.strip().lower()
+    if not low:
+        return False
+    if "?" in low:
+        return True
+    return any(m in low for m in _QUESTION_MARKERS) or any(m in low for m in _REFUSAL_MARKERS)
+
+
+def _explain_and_reask(session: dict, state: str) -> dict:
+    info = _COLLECTION_FIELDS[state]
+    text_out = f"{info['why']}\n\n{info['ask']}"
+    _record_turn(session, "assistant", text_out)
+    return {"type": "message", "text": text_out}
+
+
+# Find a valid Indonesian phone number anywhere in the message, so a furious but
+# compliant reply like "fine, ini 081234567890" still works (not just bare digits).
+_PHONE_SEARCH_RE = re.compile(r"(?:\+?62|0)[\d\s-]{8,14}")
+
+
+def _extract_phone(text: str) -> str | None:
+    m = _PHONE_SEARCH_RE.search(text or "")
+    if not m:
+        return None
+    cleaned = re.sub(r"[\s-]", "", m.group(0))
+    return cleaned if _PHONE_RE.match(cleaned) else None
+
+
 def _format_ticket_number() -> str:
     """AC4.3 — Ticket #[YY][6-digit random]. Year 2-digit + 100000–999999."""
     yy = datetime.now().strftime("%y")
@@ -529,13 +696,14 @@ def _persist_csat(chat_id: str, rating: int, session: dict) -> None:
 
 
 def _csat_thanks_and_close(session: dict, rating: int) -> dict:
-    """Send the final thank-you and reset flow state to IDLE."""
-    # Keep chat_history for telemetry, drop flow state.
+    """Send the final thank-you and enter WRAP_UP (NOT a blank IDLE).
+
+    Keeps the issue context so a follow-up ("ternyata masih error") stays on the
+    same matter rather than being re-classified as a new issue. The reaper closes
+    the session on silence; a fresh issue starts only after that (or via /start).
+    """
     session.update({
-        "state": "IDLE",
-        "topic": "",
-        "sub_topic": "",
-        "original_query": "",
+        "state": "WRAP_UP",
         "solution_steps": [],
         "step_index": 0,
         "unresolved_attempts": 0,
@@ -543,11 +711,13 @@ def _csat_thanks_and_close(session: dict, rating: int) -> dict:
         "low_conf_candidates": [],
         "predefined_choices": [],
         "ticket_form": {},
-        "source": "",
+        "followup_prompted": False,
+        "followup_prompted_at": None,
     })
     text = (
         f"Terima kasih atas penilaian Anda ({rating}/5)!\n"
-        f"Jika ada kendala lain, silakan langsung kirim pesan ke saya."
+        f"Jika masih ada yang ingin disampaikan soal kendala ini, silakan balas. "
+        f"Untuk kendala baru, ketik /start."
     )
     _record_turn(session, "assistant", text)
     return {"type": "message", "text": text}
@@ -601,16 +771,21 @@ def _finalize_ticket(session: dict) -> dict:
         "confidence": session.get("confidence", 0),
     }
     _record_turn(session, "assistant", confirmation)
-    # Reset session flow but preserve chat_id binding by leaving the dict in place.
+    # Don't snap back to a blank IDLE (which would treat the customer's very next
+    # message as a NEW issue). Enter WRAP_UP and KEEP the issue context (topic /
+    # sub_topic / original_query) so follow-ups stay tied to THIS ticket. The
+    # reaper closes the session on silence; only then does a new message start
+    # fresh.
     session.update({
-        "state": "IDLE",
-        "topic": "",
-        "original_query": "",
+        "state": "WRAP_UP",
+        "last_ticket_number": ticket_number,
         "solution_steps": [],
         "step_index": 0,
         "unresolved_attempts": 0,
         "docs": [],
         "ticket_form": {},
+        "followup_prompted": False,
+        "followup_prompted_at": None,
     })
     return payload
 
@@ -795,8 +970,33 @@ def process_message(chat_id: str, text: str) -> dict:
         return _ask_describe(session)
 
     _record_turn(session, "user", raw)
+    # Any reply restarts the idle/check-in/close cycle (they're clearly active).
+    session["followup_prompted"] = False
+    session["followup_prompted_at"] = None
     msg = raw.lower()
     state = session["state"]
+
+    # ---- WRAP_UP — issue handled; stay on the SAME issue, don't re-classify ----
+    # After a ticket is created or an issue resolved, the customer is often still
+    # talking about that same matter. Acknowledge and keep listening instead of
+    # spinning up a brand-new classification. A genuinely new issue starts only
+    # after the session auto-closes on silence (reaper) or the customer types
+    # /start (handled above).
+    if state == "WRAP_UP":
+        tnum = session.get("last_ticket_number")
+        if tnum:
+            text_out = (
+                f"Baik, saya catat tambahan ini untuk {tnum} ya — tim support akan "
+                f"menindaklanjuti. Masih ada lagi yang ingin Anda sampaikan soal "
+                f"kendala ini? Untuk kendala baru, ketik /start."
+            )
+        else:
+            text_out = (
+                "Baik, saya catat ya. Masih ada lagi yang ingin Anda sampaikan soal "
+                "kendala ini? Untuk kendala baru, ketik /start."
+            )
+        _record_turn(session, "assistant", text_out)
+        return {"type": "message", "text": text_out}
 
     # ---- AWAITING_CSAT — post-resolution rating capture ----
     if state == "AWAITING_CSAT":
@@ -874,21 +1074,27 @@ def process_message(chat_id: str, text: str) -> dict:
         # fall through to IDLE handling
 
     # ---- COLLECTING_NAME / PHONE / COMPANY / BRANCH (US4) ----
+    # Off-script guard: a question or pushback ("kenapa butuh nomor HP saya?!")
+    # instead of the value — answer it logically and re-ask, don't store/reject.
+    if state in _COLLECTION_FIELDS and _looks_like_question_or_refusal(raw):
+        return _explain_and_reask(session, state)
+
     if state == "COLLECTING_NAME":
         session["ticket_form"]["name"] = raw
         return _ticket_form_step(
             session, ("COLLECTING_PHONE", "Berapa nomor HP Anda? (contoh: 081234567890)"),
         )
     if state == "COLLECTING_PHONE":
-        if not _PHONE_RE.match(raw.replace(" ", "").replace("-", "")):
-            # AC4.7 — re-prompt on invalid phone.
+        phone = _extract_phone(raw)
+        if not phone:
+            # AC4.7 — re-prompt on invalid phone (genuine attempt, not a question).
             text_out = (
-                "Format nomor HP tidak valid. Mohon kirim ulang "
-                "(contoh: 081234567890 atau +6281234567890)."
+                "Maaf, saya belum menemukan nomor HP yang valid di pesan Anda. "
+                "Mohon kirim ulang ya (contoh: 081234567890 atau +6281234567890)."
             )
             _record_turn(session, "assistant", text_out)
             return {"type": "message", "text": text_out}
-        session["ticket_form"]["phone"] = raw
+        session["ticket_form"]["phone"] = phone
         return _ticket_form_step(
             session, ("COLLECTING_COMPANY", "Apa nama perusahaan / brand Anda?"),
         )

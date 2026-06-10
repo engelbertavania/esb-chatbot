@@ -3,6 +3,7 @@ import datetime
 
 import main
 from database import SessionLocal, ChatSession
+from agent import idle_action, FOLLOWUP_PROMPT_AFTER_SECONDS, FOLLOWUP_CLOSE_AFTER_SECONDS
 
 
 def _clear_sessions():
@@ -33,3 +34,26 @@ def test_chat_session_model_roundtrips():
     finally:
         db.close()
         _clear_sessions()
+
+
+def test_timing_constants_are_8_then_2_minutes():
+    assert FOLLOWUP_PROMPT_AFTER_SECONDS == 8 * 60
+    assert FOLLOWUP_CLOSE_AFTER_SECONDS == 2 * 60
+
+
+def test_idle_action_prompts_after_8_minutes():
+    now = 10_000.0
+    seven_min = {"chat_history": [1], "last_activity": now - 7 * 60}
+    nine_min = {"chat_history": [1], "last_activity": now - 9 * 60}
+    assert idle_action(seven_min, now) is None
+    assert idle_action(nine_min, now) == "prompt"
+
+
+def test_idle_action_closes_2_minutes_after_prompt():
+    now = 10_000.0
+    just_prompted = {"chat_history": [1], "followup_prompted": True,
+                     "followup_prompted_at": now - 60}
+    long_prompted = {"chat_history": [1], "followup_prompted": True,
+                     "followup_prompted_at": now - 3 * 60}
+    assert idle_action(just_prompted, now) is None
+    assert idle_action(long_prompted, now) == "close"
