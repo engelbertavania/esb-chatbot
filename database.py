@@ -112,7 +112,7 @@ class ChatSession(Base):
     """
     __tablename__ = "chat_sessions"
 
-    chat_id = Column(String, primary_key=True, index=True)   # Telegram chat id (str); web:* never stored
+    chat_id = Column(String, primary_key=True)   # Telegram chat id (str); web:* never stored
     last_activity = Column(DateTime, default=datetime.datetime.utcnow)
     followup_prompted = Column(Boolean, default=False)
     followup_prompted_at = Column(DateTime, nullable=True)
