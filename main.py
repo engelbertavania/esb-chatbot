@@ -11,13 +11,14 @@ import contextlib
 import gzip
 import html
 import json
+import datetime
 import logging
 import re
 import time
 import httpx
 import os
 
-from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote
+from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote, ChatSession
 from agent import (
     process_message, SESSION_STATE, _record_turn, _fresh_session,
     detect_anger, calming_message, idle_action,
@@ -44,6 +45,13 @@ if not TELEGRAM_WEBHOOK_SECRET:
     logging.warning(
         "TELEGRAM_WEBHOOK_SECRET is unset; /webhook will accept any caller. "
         "Set it (and pass --secret-token to setWebhook) to require auth.",
+    )
+
+REAP_SECRET = os.getenv("REAP_SECRET", "")
+if not REAP_SECRET:
+    logging.warning(
+        "REAP_SECRET is unset; /reap will reject all callers. Set it (and pass "
+        "the same value as the X-Reap-Secret header from Cloud Scheduler).",
     )
 
 
@@ -1181,6 +1189,50 @@ async def _session_reaper_loop() -> None:
             break
         except Exception as e:
             logging.warning("session reaper pass failed: %s", e)
+
+
+# Out-of-band idle-session messages — shared by the scheduled /reap pass.
+FOLLOWUP_PROMPT_TEXT = (
+    "Apakah masih ada yang bisa kami bantu? 🙏 Jika tidak ada balasan "
+    "beberapa saat lagi, sesi ini akan saya tutup. Anda bisa mulai lagi "
+    "kapan saja dengan mengirim pesan."
+)
+SESSION_CLOSE_TEXT = (
+    "Sesi saya tutup dulu ya karena tidak ada balasan. Terima kasih sudah "
+    "menghubungi ESB Order 🙏 Kirim pesan kapan saja jika ada kendala lain."
+)
+
+
+def _epoch(dt):
+    """Convert a naive-UTC DateTime column to epoch seconds (matches time.time())."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _touch_session_liveness(chat_id: str) -> None:
+    """Record a customer turn for the DB-backed reaper: bump last_activity, mark
+    the session active, and clear any pending follow-up (a reply means they're
+    not idle). Best-effort: never let a DB hiccup break the webhook. Web
+    sessions have no push channel, so they're skipped."""
+    if chat_id.startswith("web:"):
+        return
+    db = SessionLocal()
+    try:
+        row = db.get(ChatSession, chat_id)
+        if row is None:
+            row = ChatSession(chat_id=chat_id)
+            db.add(row)
+        row.last_activity = datetime.datetime.utcnow()
+        row.has_history = True
+        row.followup_prompted = False
+        row.followup_prompted_at = None
+        db.commit()
+    except Exception as e:  # never break message handling over liveness tracking
+        logging.warning("session liveness upsert failed for %s: %s", chat_id, e)
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _maybe_send_calming(chat_id, text, user_info, background_tasks) -> None:

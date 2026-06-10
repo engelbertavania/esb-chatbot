@@ -57,3 +57,40 @@ def test_idle_action_closes_2_minutes_after_prompt():
                      "followup_prompted_at": now - 3 * 60}
     assert idle_action(just_prompted, now) is None
     assert idle_action(long_prompted, now) == "close"
+
+
+def test_touch_session_liveness_creates_and_resets():
+    _clear_sessions()
+    # Pre-seed a prompted row, then a new turn must reset the follow-up state.
+    db = SessionLocal()
+    try:
+        db.add(ChatSession(chat_id="9100", last_activity=datetime.datetime(2020, 1, 1),
+                           followup_prompted=True,
+                           followup_prompted_at=datetime.datetime(2020, 1, 1),
+                           has_history=True))
+        db.commit()
+    finally:
+        db.close()
+
+    main._touch_session_liveness("9100")
+
+    db = SessionLocal()
+    try:
+        row = db.get(ChatSession, "9100")
+        assert row.has_history is True
+        assert row.followup_prompted is False
+        assert row.followup_prompted_at is None
+        assert row.last_activity > datetime.datetime(2021, 1, 1)
+    finally:
+        db.close()
+        _clear_sessions()
+
+
+def test_touch_session_liveness_skips_web_sessions():
+    _clear_sessions()
+    main._touch_session_liveness("web:abc")
+    db = SessionLocal()
+    try:
+        assert db.get(ChatSession, "web:abc") is None
+    finally:
+        db.close()
