@@ -1334,3 +1334,51 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(send_telegram_message, chat_id, response, user_info)
 
     return {"status": "ok"}
+
+
+@app.post("/reap")
+def reap_idle_sessions(request: Request, db: Session = Depends(get_db)):
+    """Scheduled idle-session sweep (called every minute by Cloud Scheduler).
+
+    Reads liveness rows from chat_sessions, reuses the pure agent.idle_action()
+    to decide, and pushes the nudge/close Telegram message out of band. Replaces
+    the old in-memory reaper so it works under Cloud Run scale-to-zero.
+    """
+    if not REAP_SECRET or request.headers.get("X-Reap-Secret", "") != REAP_SECRET:
+        raise HTTPException(status_code=403, detail="invalid reap secret")
+
+    now = time.time()
+    prompted = 0
+    closed = 0
+    rows = db.query(ChatSession).filter(ChatSession.has_history.is_(True)).all()
+    for row in rows:
+        pseudo = {
+            "chat_history": [1] if row.has_history else [],
+            "last_activity": _epoch(row.last_activity) or now,
+            "followup_prompted": bool(row.followup_prompted),
+            "followup_prompted_at": _epoch(row.followup_prompted_at) or now,
+        }
+        action = idle_action(pseudo, now)
+        try:
+            if action == "prompt":
+                send_telegram_message(int(row.chat_id), {"type": "message", "text": FOLLOWUP_PROMPT_TEXT})
+                row.followup_prompted = True
+                row.followup_prompted_at = datetime.datetime.utcnow()
+                db.commit()
+                mem = SESSION_STATE.get(row.chat_id)
+                if mem is not None:
+                    mem["followup_prompted"] = True
+                    mem["followup_prompted_at"] = now
+                prompted += 1
+            elif action == "close":
+                send_telegram_message(int(row.chat_id), {"type": "message", "text": SESSION_CLOSE_TEXT})
+                if row.chat_id in SESSION_STATE:
+                    SESSION_STATE[row.chat_id] = _fresh_session()
+                db.delete(row)
+                db.commit()
+                closed += 1
+        except Exception as e:  # one bad row must not abort the whole pass
+            logging.warning("reap failed for %s: %s", row.chat_id, e)
+            db.rollback()
+
+    return {"prompted": prompted, "closed": closed}

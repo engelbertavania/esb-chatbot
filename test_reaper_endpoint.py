@@ -125,3 +125,89 @@ def test_webhook_turn_records_liveness(webhook_client):
         assert row.followup_prompted is False
     finally:
         db.close()
+
+
+import datetime as _dt
+
+
+@pytest.fixture
+def reap_client(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_telegram_message",
+                        lambda chat_id, response, user_info=None:
+                        sent.append({"chat_id": chat_id, "text": response.get("text", "")}))
+    monkeypatch.setattr(main, "REAP_SECRET", "testsecret")
+    main.SESSION_STATE.clear()
+    _clear_sessions()
+    client = TestClient(main.app)
+    headers = {"X-Reap-Secret": "testsecret"}
+    yield client, headers, sent
+    _clear_sessions()
+
+
+def _seed(chat_id, *, idle_min, prompted=False, prompted_min_ago=None, has_history=True):
+    db = SessionLocal()
+    try:
+        db.add(ChatSession(
+            chat_id=chat_id,
+            last_activity=_dt.datetime.utcnow() - _dt.timedelta(minutes=idle_min),
+            followup_prompted=prompted,
+            followup_prompted_at=(None if prompted_min_ago is None
+                                  else _dt.datetime.utcnow() - _dt.timedelta(minutes=prompted_min_ago)),
+            has_history=has_history,
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_reap_rejects_without_secret(reap_client):
+    client, _headers, _sent = reap_client
+    assert client.post("/reap").status_code == 403
+    assert client.post("/reap", headers={"X-Reap-Secret": "wrong"}).status_code == 403
+
+
+def test_reap_does_nothing_for_recent_session(reap_client):
+    client, headers, sent = reap_client
+    _seed("8001", idle_min=3)
+    body = client.post("/reap", headers=headers).json()
+    assert body == {"prompted": 0, "closed": 0}
+    assert sent == []
+
+
+def test_reap_nudges_after_8_minutes(reap_client):
+    client, headers, sent = reap_client
+    _seed("8002", idle_min=9)
+    body = client.post("/reap", headers=headers).json()
+    assert body["prompted"] == 1
+    assert "masih ada" in sent[0]["text"].lower()
+    db = SessionLocal()
+    try:
+        row = db.get(ChatSession, "8002")
+        assert row.followup_prompted is True
+        assert row.followup_prompted_at is not None
+    finally:
+        db.close()
+
+
+def test_reap_closes_2_minutes_after_nudge(reap_client):
+    client, headers, sent = reap_client
+    _seed("8003", idle_min=11, prompted=True, prompted_min_ago=3)
+    main.SESSION_STATE["8003"] = {"state": "WRAP_UP"}
+    body = client.post("/reap", headers=headers).json()
+    assert body["closed"] == 1
+    assert "tutup" in sent[0]["text"].lower()
+    db = SessionLocal()
+    try:
+        assert db.get(ChatSession, "8003") is None     # row deleted on close
+    finally:
+        db.close()
+    assert main.SESSION_STATE["8003"]["state"] == "IDLE"  # in-memory reset to fresh
+
+
+def test_reap_ignores_sessions_without_history(reap_client):
+    client, headers, sent = reap_client
+    _seed("8004", idle_min=20, has_history=False)
+    body = client.post("/reap", headers=headers).json()
+    assert body == {"prompted": 0, "closed": 0}
+    assert sent == []
