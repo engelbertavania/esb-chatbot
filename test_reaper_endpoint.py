@@ -211,3 +211,18 @@ def test_reap_ignores_sessions_without_history(reap_client):
     body = client.post("/reap", headers=headers).json()
     assert body == {"prompted": 0, "closed": 0}
     assert sent == []
+
+
+def test_reap_closes_prompted_row_with_missing_timestamp(reap_client):
+    # Defensive: a prompted row with a NULL followup_prompted_at must still close,
+    # not get stuck forever.
+    client, headers, sent = reap_client
+    _seed("8005", idle_min=20, prompted=True, prompted_min_ago=None)
+    body = client.post("/reap", headers=headers).json()
+    assert body["closed"] == 1
+    assert "tutup" in sent[0]["text"].lower()
+    db = SessionLocal()
+    try:
+        assert db.get(ChatSession, "8005") is None
+    finally:
+        db.close()

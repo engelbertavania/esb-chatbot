@@ -1356,7 +1356,7 @@ def reap_idle_sessions(request: Request, db: Session = Depends(get_db)):
             "chat_history": [1] if row.has_history else [],
             "last_activity": _epoch(row.last_activity) or now,
             "followup_prompted": bool(row.followup_prompted),
-            "followup_prompted_at": _epoch(row.followup_prompted_at) or now,
+            "followup_prompted_at": _epoch(row.followup_prompted_at) or 0.0,
         }
         action = idle_action(pseudo, now)
         try:
