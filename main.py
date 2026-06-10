@@ -5,17 +5,23 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import asyncio
 import base64
+import contextlib
 import gzip
 import html
 import json
 import logging
 import re
+import time
 import httpx
 import os
 
 from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote
-from agent import process_message, SESSION_STATE, _record_turn, _fresh_session
+from agent import (
+    process_message, SESSION_STATE, _record_turn, _fresh_session,
+    detect_anger, calming_message, idle_action,
+)
 from rag import vertex_search_available
 
 # PRD US3 attachment constraints.
@@ -62,13 +68,37 @@ def _telegram_user(update: dict) -> dict:
 # Initialize DB
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="AI Chatbot Backend Phase 1")
 
-# Enable CORS
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the idle-session reaper (defined below) so the bot can proactively
+    # check in on quiet customers and close stale chats.
+    task = asyncio.create_task(_session_reaper_loop())
+    logging.info("Idle session reaper started (every %ss).", REAPER_INTERVAL_SECONDS)
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="AI Chatbot Backend Phase 1", lifespan=lifespan)
+
+# Enable CORS. Set CORS_ALLOW_ORIGINS to a comma-separated list of frontend
+# origins in production (e.g. "https://your-app.vercel.app"). Defaults to "*"
+# for local dev. Note: browsers reject "*" together with credentials, so we
+# only enable credentials when explicit origins are configured.
+_cors_env = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
+if _cors_env in ("", "*"):
+    _allow_origins = ["*"]
+    _allow_credentials = False
+else:
+    _allow_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    _allow_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1096,6 +1126,88 @@ def _validate_attachment(att: dict, session_attachments: list[dict]) -> str | No
     return None
 
 
+# ── Idle session reaper (proactive check-in + graceful auto-close) ───────────
+# Telegram is one-directional from the customer's side — we only hear from them
+# on /webhook. To "ask if they're still there" and later close the chat, a
+# background loop scans the in-memory sessions and pushes messages out of band.
+REAPER_INTERVAL_SECONDS = 20  # how often to scan for idle sessions
+
+
+async def _send_async(chat_id: int, text: str) -> None:
+    """Fire a plain Telegram message from the async reaper without blocking the
+    event loop (send_telegram_message is sync httpx)."""
+    if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "mock_token":
+        return  # no real token — nothing to deliver (e.g. local/dev)
+    try:
+        await asyncio.to_thread(send_telegram_message, chat_id, {"type": "message", "text": text})
+    except Exception as e:  # never let a send failure kill the reaper
+        logging.warning("reaper send to %s failed: %s", chat_id, e)
+
+
+async def _reap_idle_sessions() -> None:
+    """One pass: nudge sessions that have gone quiet, close the ones that stayed
+    quiet after the nudge. Web sessions (no push channel) are skipped."""
+    now = time.time()
+    for chat_id, session in list(SESSION_STATE.items()):
+        if not isinstance(chat_id, str) or chat_id.startswith("web:"):
+            continue
+        action = idle_action(session, now)
+        if action == "prompt":
+            session["followup_prompted"] = True
+            session["followup_prompted_at"] = now
+            msg = (
+                "Apakah masih ada yang bisa kami bantu? 🙏 Jika tidak ada balasan "
+                "beberapa saat lagi, sesi ini akan saya tutup. Anda bisa mulai lagi "
+                "kapan saja dengan mengirim pesan."
+            )
+            _record_turn(session, "assistant", msg)
+            await _send_async(int(chat_id), msg)
+        elif action == "close":
+            msg = (
+                "Sesi saya tutup dulu ya karena tidak ada balasan. Terima kasih sudah "
+                "menghubungi ESB Order 🙏 Kirim pesan kapan saja jika ada kendala lain."
+            )
+            await _send_async(int(chat_id), msg)
+            # Fresh session => the NEXT message is treated as a brand-new issue.
+            SESSION_STATE[chat_id] = _fresh_session()
+
+
+async def _session_reaper_loop() -> None:
+    while True:
+        try:
+            await asyncio.sleep(REAPER_INTERVAL_SECONDS)
+            await _reap_idle_sessions()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.warning("session reaper pass failed: %s", e)
+
+
+def _maybe_send_calming(chat_id, text, user_info, background_tasks) -> None:
+    """Customer-facing de-escalation: if the incoming message reads as furious,
+    queue one empathetic, calming reply AHEAD of the normal bot response.
+
+    Sent at most once per session (tracked on ``session["deescalated"]``) so we
+    don't repeat ourselves at every angry turn; a fresh session (/start or idle
+    reset) re-arms it. Background tasks run in FIFO order, so adding this before
+    the main response guarantees the customer sees the calming note first.
+    """
+    if not text:
+        return
+    raw = text.strip()
+    if not raw or raw.startswith("/"):  # skip commands like /start, /help
+        return
+    session = SESSION_STATE.setdefault(str(chat_id), _fresh_session())
+    if session.get("deescalated") or not detect_anger(raw):
+        return
+    session["deescalated"] = True
+    msg = calming_message()
+    _record_turn(session, "assistant", msg)
+    background_tasks.add_task(
+        send_telegram_message, chat_id, {"type": "message", "text": msg}, user_info,
+    )
+
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receives Telegram updates and dispatches them to the agent."""
@@ -1137,6 +1249,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         # AC3.4 / AC1.12 — image without text: ack and request a description.
         caption = (attachment.get("caption") or "").strip()
         if caption:
+            _maybe_send_calming(chat_id, caption, user_info, background_tasks)
             response = process_message(str(chat_id), caption)
         else:
             ack = (
@@ -1160,6 +1273,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         session.setdefault("attachments", []).append(attachment)
 
     if text:
+        _maybe_send_calming(chat_id, text, user_info, background_tasks)
         response = process_message(str(chat_id), text)
         background_tasks.add_task(send_telegram_message, chat_id, response, user_info)
 
