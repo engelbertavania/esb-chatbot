@@ -1,6 +1,6 @@
 import config  # noqa: F401 — loads .env before any os.getenv reads
 
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import datetime
@@ -100,6 +100,23 @@ class CSATRating(Base):
     original_query = Column(Text)               # merchant's first message that session
     resolved_via = Column(String)               # "ca" or "llm"
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class ChatSession(Base):
+    """Minimal idle-liveness record per Telegram chat, driving the scheduled
+    /reap auto-close (see docs/superpowers/specs/2026-06-11-db-backed-reaper-design.md).
+
+    Stores ONLY the fields agent.idle_action() reads, so the reaper survives
+    Cloud Run instance recycling where in-memory SESSION_STATE is lost. The rich
+    conversation state still lives in memory; this table is liveness only.
+    """
+    __tablename__ = "chat_sessions"
+
+    chat_id = Column(String, primary_key=True, index=True)   # Telegram chat id (str); web:* never stored
+    last_activity = Column(DateTime, default=datetime.datetime.utcnow)
+    followup_prompted = Column(Boolean, default=False)
+    followup_prompted_at = Column(DateTime, nullable=True)
+    has_history = Column(Boolean, default=False)
 
 
 def _ensure_schema() -> None:
