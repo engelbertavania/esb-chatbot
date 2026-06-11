@@ -235,3 +235,16 @@ def test_get_messages_after_id(tg):
     r = client.get(f"/api/tickets/{tid}/handoff/messages", params={"after_id": first_id})
     rows = r.json()
     assert [m["text"] for m in rows] == ["dua"]
+
+
+def test_end_resolves_and_resets_session(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8300", "active")
+    main.SESSION_STATE["8300"] = {**_fresh_session(), "state": "HUMAN_HANDOFF"}
+    r = client.post(f"/api/tickets/{tid}/handoff/end", json={"agent": "CC - Ayu"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["handoff_state"] == "ended" and body["status"] == "Resolved"
+    assert any("berakhir" in s["text"].lower() for s in sent)
+    assert main.SESSION_STATE["8300"]["state"] == "IDLE"
+    assert main._relay_if_handoff("8300", "halo", None) is False

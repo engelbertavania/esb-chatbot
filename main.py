@@ -996,6 +996,27 @@ def handoff_messages(ticket_id: int, after_id: int = 0, db: Session = Depends(ge
     return [_live_message_to_dict(m) for m in rows]
 
 
+@app.post("/api/tickets/{ticket_id}/handoff/end")
+def handoff_end(ticket_id: int, body: dict, db: Session = Depends(get_db)):
+    t = db.get(Ticket, ticket_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    if t.handoff_state not in ("requested", "active"):
+        raise HTTPException(status_code=409, detail=f"handoff is {t.handoff_state}")
+    agent = (body or {}).get("agent") or t.handoff_agent or "Customer Care"
+    t.handoff_state = "ended"
+    t.status = "Resolved"
+    db.commit()
+    _record_live_message(db, t, "system", f"Live chat diakhiri oleh {agent}.", author=agent)
+    if t.chat_id in SESSION_STATE:
+        SESSION_STATE[t.chat_id] = _fresh_session()
+    try:
+        send_telegram_message(int(t.chat_id), {"type": "message", "text": HANDOFF_END_TEXT})
+    except Exception as e:
+        logging.warning("handoff end send failed for %s: %s", t.chat_id, e)
+    return _ticket_to_dict(t)
+
+
 @app.get("/api/agents/workload")
 def agents_workload(db: Session = Depends(get_db)):
     """Active/resolved ticket counts per handler (assignee, else routed_queue).
