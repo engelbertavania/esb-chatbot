@@ -126,6 +126,31 @@ def tg(monkeypatch):
     _clear()
 
 
+def test_webhook_relays_customer_message_during_handoff(tg, monkeypatch):
+    client, headers, post, sent = tg
+    db = SessionLocal()
+    try:
+        db.add(Ticket(ticket_number="Ticket #TEST05", chat_id="7200",
+                      issue_category="Customer Care (Live Chat)", handoff_state="active",
+                      handoff_last_activity=datetime.datetime(2020, 1, 1)))
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(main, "process_message",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("bot answered during handoff")))
+    out = post(7200, "halo saya masih bingung")
+    assert out == []  # no bot reply sent
+    db = SessionLocal()
+    try:
+        t = main._active_handoff_for(db, "7200")
+        msgs = db.query(LiveMessage).filter(LiveMessage.ticket_id == t.id,
+                                            LiveMessage.sender == "customer").all()
+        assert any("bingung" in m.text for m in msgs)
+        assert t.handoff_last_activity > datetime.datetime(2021, 1, 1)
+    finally:
+        db.close()
+
+
 def test_webhook_starts_handoff_and_creates_ticket(tg):
     client, headers, post, sent = tg
     main.SESSION_STATE["7100"] = {**_fresh_session(), "state": "CHOOSING_PREDEFINED",

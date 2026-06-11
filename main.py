@@ -1238,6 +1238,33 @@ def _create_handoff_ticket(db, chat_id: str, user_info: dict | None):
     return t
 
 
+def _relay_if_handoff(chat_id: str, text: str | None, attachment: dict | None) -> bool:
+    """If this chat is in a handoff, record the customer's message to
+    live_messages and return True (caller sends no bot reply). Else False."""
+    if str(chat_id).startswith("web:"):
+        return False
+    db = SessionLocal()
+    try:
+        h = _active_handoff_for(db, str(chat_id))
+        if h is None:
+            return False
+        if text:
+            body = text
+        elif attachment:
+            body = f"[lampiran: {attachment.get('kind', 'file')}]"
+        else:
+            body = ""
+        _record_live_message(db, h, "customer", body)
+        _bump_handoff_activity(db, h)
+        return True
+    except Exception as e:
+        logging.warning("handoff relay failed for %s: %s", chat_id, e)
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+
 def _start_handoff(chat_id: str, user_info: dict | None) -> None:
     """Best-effort: create the handoff ticket (own DB session). Skips web: ids."""
     if str(chat_id).startswith("web:"):
@@ -1319,6 +1346,11 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     # Mirror liveness to the DB so the scheduled /reap can nudge/close this
     # session even after in-memory SESSION_STATE is lost on instance recycle.
     _touch_session_liveness(str(chat_id))
+
+    # If a CC agent owns this chat, relay the customer's message to the dashboard
+    # and stay silent (DB-backed so it survives instance recycle).
+    if _relay_if_handoff(str(chat_id), text, attachment):
+        return {"status": "ok"}
 
     # --- Attachment-only path (US3 / AC1.12) -------------------------------
     if attachment and not text:
