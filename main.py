@@ -647,6 +647,8 @@ def _ticket_to_dict(t: Ticket) -> dict:
         "priority": t.priority,
         "assignee": t.assignee,
         "assign_to": t.assign_to,
+        "handoff_state": t.handoff_state,
+        "handoff_agent": t.handoff_agent,
         "notes": [_note_to_dict(n) for n in t.notes],
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
@@ -939,6 +941,28 @@ def edit_ticket_note(ticket_id: int, note_id: int, payload: dict, db: Session = 
     db.commit()
     db.refresh(note)
     return _note_to_dict(note)
+
+
+@app.post("/api/tickets/{ticket_id}/handoff/join")
+def handoff_join(ticket_id: int, body: dict, db: Session = Depends(get_db)):
+    t = db.get(Ticket, ticket_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    if t.handoff_state != "requested":
+        raise HTTPException(status_code=409, detail=f"handoff is {t.handoff_state}, not requested")
+    agent = (body or {}).get("agent") or "Customer Care"
+    t.handoff_state = "active"
+    t.handoff_agent = agent
+    t.assignee = agent
+    t.status = "In Progress"
+    t.handoff_last_activity = datetime.datetime.utcnow()
+    db.commit()
+    _record_live_message(db, t, "system", f"{agent} bergabung ke live chat.", author=agent)
+    try:
+        send_telegram_message(int(t.chat_id), {"type": "message", "text": HANDOFF_JOIN_TEXT})
+    except Exception as e:
+        logging.warning("handoff join send failed for %s: %s", t.chat_id, e)
+    return _ticket_to_dict(t)
 
 
 @app.get("/api/agents/workload")

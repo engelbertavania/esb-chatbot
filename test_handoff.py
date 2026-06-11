@@ -166,3 +166,39 @@ def test_webhook_starts_handoff_and_creates_ticket(tg):
         assert any(m.sender == "system" for m in msgs)
     finally:
         db.close()
+
+
+def _seed_handoff(chat_id, state="requested"):
+    db = SessionLocal()
+    try:
+        t = Ticket(ticket_number=f"Ticket #J{chat_id}", chat_id=str(chat_id),
+                   issue_category="Customer Care (Live Chat)", status="Waiting",
+                   handoff_state=state, handoff_last_activity=datetime.datetime.utcnow())
+        db.add(t); db.commit(); db.refresh(t)
+        return t.id
+    finally:
+        db.close()
+
+
+def test_join_activates_and_greets(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8100", "requested")
+    r = client.post(f"/api/tickets/{tid}/handoff/join", json={"agent": "CC - Ayu"})
+    assert r.status_code == 200
+    assert r.json()["handoff_state"] == "active"
+    assert any("terhubung dengan customer care" in s["text"].lower() for s in sent)
+    db = SessionLocal()
+    try:
+        t = db.get(Ticket, tid)
+        assert t.handoff_agent == "CC - Ayu" and t.assignee == "CC - Ayu"
+        assert db.query(LiveMessage).filter(LiveMessage.ticket_id == tid,
+                                            LiveMessage.sender == "system").count() >= 1
+    finally:
+        db.close()
+
+
+def test_join_twice_returns_409(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8101", "active")
+    r = client.post(f"/api/tickets/{tid}/handoff/join", json={"agent": "CC - Budi"})
+    assert r.status_code == 409
