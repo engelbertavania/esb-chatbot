@@ -64,3 +64,35 @@ def test_human_handoff_state_does_not_auto_answer():
     resp = process_message("6003", "tolong bantu setting payment gateway")
     assert resp["type"] == "message"
     assert "customer care" in resp["text"].lower()
+
+
+def test_active_handoff_for_finds_requested_or_active():
+    _clear()
+    db = SessionLocal()
+    try:
+        db.add(Ticket(ticket_number="Ticket #TEST02", chat_id="7001",
+                      issue_category="Customer Care (Live Chat)",
+                      handoff_state="active"))
+        db.commit()
+        assert main._active_handoff_for(db, "7001") is not None
+        assert main._active_handoff_for(db, "9999") is None
+    finally:
+        db.close()
+        _clear()
+
+
+def test_record_live_message_and_bump_activity():
+    _clear()
+    db = SessionLocal()
+    try:
+        t = Ticket(ticket_number="Ticket #TEST03", chat_id="7002",
+                   issue_category="Customer Care (Live Chat)", handoff_state="active",
+                   handoff_last_activity=datetime.datetime(2020, 1, 1))
+        db.add(t); db.commit(); db.refresh(t)
+        m = main._record_live_message(db, t, "agent", "halo", author="CC - Ayu")
+        assert m.id is not None and m.sender == "agent" and m.author == "CC - Ayu"
+        main._bump_handoff_activity(db, t)
+        assert db.get(Ticket, t.id).handoff_last_activity > datetime.datetime(2021, 1, 1)
+    finally:
+        db.close()
+        _clear()

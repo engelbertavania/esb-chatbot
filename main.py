@@ -17,7 +17,7 @@ import time
 import httpx
 import os
 
-from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote, ChatSession
+from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote, ChatSession, LiveMessage
 from agent import (
     process_message, SESSION_STATE, _record_turn, _fresh_session,
     detect_anger, calming_message, idle_action,
@@ -1171,6 +1171,55 @@ def _touch_session_liveness(chat_id: str) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+# --- Customer Care live-chat handoff ---------------------------------------
+HANDOFF_JOIN_TEXT = (
+    "Anda sekarang terhubung dengan Customer Care kami. Silakan sampaikan "
+    "kebutuhan Anda 🙏"
+)
+HANDOFF_END_TEXT = (
+    "Sesi live chat dengan Customer Care telah berakhir. Terima kasih 🙏 "
+    "Ketik pesan kapan saja untuk memulai lagi dengan asisten kami."
+)
+HANDOFF_IDLE_TIMEOUT = 15 * 60  # seconds of inactivity before a live chat auto-ends
+
+
+def _active_handoff_for(db, chat_id: str):
+    """Return the most recent Ticket for chat_id whose handoff is requested or
+    active, else None."""
+    return (
+        db.query(Ticket)
+        .filter(Ticket.chat_id == str(chat_id),
+                Ticket.handoff_state.in_(["requested", "active"]))
+        .order_by(Ticket.id.desc())
+        .first()
+    )
+
+
+def _record_live_message(db, ticket, sender: str, text: str, author: str | None = None):
+    """Append a row to live_messages for this handoff ticket and commit."""
+    m = LiveMessage(ticket_id=ticket.id, chat_id=ticket.chat_id,
+                    sender=sender, text=text, author=author)
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+    return m
+
+
+def _bump_handoff_activity(db, ticket) -> None:
+    ticket.handoff_last_activity = datetime.datetime.utcnow()
+    db.commit()
+
+
+def _live_message_to_dict(m) -> dict:
+    return {
+        "id": m.id,
+        "sender": m.sender,
+        "text": m.text,
+        "author": m.author,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+    }
 
 
 def _maybe_send_calming(chat_id, text, user_info, background_tasks) -> None:
