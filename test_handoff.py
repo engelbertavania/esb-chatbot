@@ -278,3 +278,15 @@ def test_reap_auto_ends_idle_handoff(tg, monkeypatch):
             db2.commit()
         finally:
             db2.close()
+
+
+def test_ticket_dict_includes_handoff_fields(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8500", "active")
+    db = SessionLocal()
+    try:
+        d = main._ticket_to_dict(db.get(Ticket, tid))
+    finally:
+        db.close()
+    assert d["handoff_state"] == "active"
+    assert "handoff_agent" in d
