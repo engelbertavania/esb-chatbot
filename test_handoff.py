@@ -290,3 +290,36 @@ def test_ticket_dict_includes_handoff_fields(tg):
         db.close()
     assert d["handoff_state"] == "active"
     assert "handoff_agent" in d
+
+
+from database import ChatSession
+
+
+def test_idle_reaper_skips_chat_in_handoff(tg, monkeypatch):
+    client, headers, post, sent = tg
+    monkeypatch.setattr(main, "REAP_SECRET", "testsecret")
+    # An active handoff whose handoff activity is RECENT (so the handoff sweep
+    # won't auto-end it), but whose chat_sessions liveness is old enough that the
+    # idle reaper would normally nudge it.
+    _seed_handoff("8600", "active")
+    db = SessionLocal()
+    try:
+        db.query(ChatSession).filter(ChatSession.chat_id == "8600").delete()
+        db.commit()
+        old = datetime.datetime.utcnow() - datetime.timedelta(minutes=9)
+        db.add(ChatSession(chat_id="8600", last_activity=old,
+                           followup_prompted=False, has_history=True))
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/reap", headers={"X-Reap-Secret": "testsecret"})
+    assert r.status_code == 200
+    assert r.json()["prompted"] == 0          # idle reaper skipped the handoff chat
+    assert not any("masih ada yang bisa" in s["text"].lower() for s in sent)
+    # cleanup the ChatSession row
+    db = SessionLocal()
+    try:
+        db.query(ChatSession).filter(ChatSession.chat_id == "8600").delete()
+        db.commit()
+    finally:
+        db.close()

@@ -1491,6 +1491,8 @@ def reap_idle_sessions(request: Request, db: Session = Depends(get_db)):
     closed = 0
     rows = db.query(ChatSession).filter(ChatSession.has_history.is_(True)).all()
     for row in rows:
+        if _active_handoff_for(db, row.chat_id) is not None:
+            continue  # a CC agent owns this chat — don't let the bot nudge/close it
         pseudo = {
             "chat_history": [1] if row.has_history else [],
             "last_activity": _epoch(row.last_activity) or now,
