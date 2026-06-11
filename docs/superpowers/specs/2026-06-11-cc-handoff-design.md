@@ -105,20 +105,32 @@ or None (most recent if several).
 
 ## Menu entry & trigger (`agent.py`)
 
-- `_present_category_menu()` appends a final option `"💬 Chat dengan Customer Care"`.
-- A module constant `HANDOFF_OPTION = "💬 Chat dengan Customer Care"`.
-- In the `MENU_CATEGORY` dispatch (and as a safety net wherever the category
-  options are matched), if the picked option equals `HANDOFF_OPTION`, return:
+The live `/start` flow is `_ask_describe()` → `IDLE`; when the customer
+describes an issue, `_present_matching_predefined()` shows the matching
+predefined issues as button options (state `CHOOSING_PREDEFINED`). (The
+`_present_category_menu()`/`MENU_CATEGORY` path is dormant — not wired into
+`/start` — so the handoff option goes on the active predefined-options path.)
+
+- Module constant `HANDOFF_OPTION = "💬 Chat dengan Customer Care"`.
+- Append `HANDOFF_OPTION` to the option lists returned by the predefined-issue
+  presenters: `_present_matching_predefined`, `_present_predefined_menu`, and
+  `_present_category_issues` (alongside the existing `ESCAPE_OPTION`).
+- In the `CHOOSING_PREDEFINED` dispatch, BEFORE the normal exact-match, if the
+  picked option equals `HANDOFF_OPTION` return:
   ```python
   {"type": "handoff_request",
    "text": "Baik, mohon tunggu sebentar ya 🙏 Tim Customer Care kami akan segera bergabung dengan Anda."}
   ```
   and set `session["state"] = "HUMAN_HANDOFF"`.
-- New `process_message` branch: when `state == "HUMAN_HANDOFF"`, the agent does
-  NOT run normal logic. (In practice the webhook intercepts handoff before
-  `process_message` using the DB; this branch is a defensive fallback that simply
-  re-emits a short "tim CC akan segera membantu" and records the turn — it must
-  never auto-answer the substantive query.)
+- Also make it reachable when no predefined issue matches: the IDLE
+  "nothing matched, please rephrase" branch becomes a `question` whose only
+  option is `HANDOFF_OPTION` (so a stuck customer can always reach a human),
+  with the same `CHOOSING_PREDEFINED`-style handling.
+- Defensive `process_message` branch: when `state == "HUMAN_HANDOFF"`, the agent
+  does NOT run normal logic — it returns a short "tim CC akan segera membantu"
+  message and records the turn. (In practice the webhook intercepts handoff
+  before `process_message` using the DB; this branch only matters if in-memory
+  state ever leads here, and must never auto-answer the substantive query.)
 
 ## Webhook relay (`main.py`)
 
