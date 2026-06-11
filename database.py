@@ -57,6 +57,10 @@ class Ticket(Base):
     priority = Column(String)                   # High | Medium | Low | Compliment
     assignee = Column(String)                   # current handler, e.g. "CC - Ayu Rahayu"
     assign_to = Column(String)                  # escalation target
+    # Customer Care live-chat handoff.
+    handoff_state = Column(String)               # requested | active | ended | None
+    handoff_agent = Column(String)               # agent who joined
+    handoff_last_activity = Column(DateTime)     # bumped on each relayed msg; drives auto-end
 
     notes = relationship(
         "TicketNote",
@@ -119,6 +123,24 @@ class ChatSession(Base):
     has_history = Column(Boolean, default=False)
 
 
+class LiveMessage(Base):
+    """One message in a live Customer-Care handoff conversation (both directions).
+
+    Source of truth for the live transcript; polled by the dashboard via
+    GET /api/tickets/{id}/handoff/messages. See
+    docs/superpowers/specs/2026-06-11-cc-handoff-design.md.
+    """
+    __tablename__ = "live_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), index=True)
+    chat_id = Column(String, index=True)              # Telegram chat id (str)
+    sender = Column(String)                           # customer | agent | system
+    text = Column(Text)
+    author = Column(String, nullable=True)            # agent name for agent/system rows
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+
 def _ensure_schema() -> None:
     """Idempotent migration — add new columns to an existing ``tickets`` table
     without dropping it. Works on both SQLite and PostgreSQL.
@@ -136,6 +158,10 @@ def _ensure_schema() -> None:
         "priority": "VARCHAR",
         "assignee": "VARCHAR",
         "assign_to": "VARCHAR",
+        # Customer Care handoff.
+        "handoff_state": "VARCHAR",
+        "handoff_agent": "VARCHAR",
+        "handoff_last_activity": "TIMESTAMP",
     }
     inspector = inspect(engine)
     if not inspector.has_table("tickets"):
