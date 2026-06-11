@@ -21,7 +21,9 @@ from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote,
 from agent import (
     process_message, SESSION_STATE, _record_turn, _fresh_session,
     detect_anger, calming_message, idle_action,
+    HANDOFF_OPTION, _format_ticket_number,
 )
+HANDOFF_OPTION_VALUE = HANDOFF_OPTION
 from rag import vertex_search_available
 
 # PRD US3 attachment constraints.
@@ -1212,6 +1214,45 @@ def _bump_handoff_activity(db, ticket) -> None:
     db.commit()
 
 
+def _create_handoff_ticket(db, chat_id: str, user_info: dict | None):
+    """Create a 'requested' handoff Ticket for this chat and record a system
+    live_message. Returns the ticket."""
+    info = user_info or {}
+    t = Ticket(
+        ticket_number=_format_ticket_number(),
+        name=info.get("name") or info.get("full_name") or info.get("first_name") or "",
+        phone_number="",
+        company_name="",
+        branch_name="",
+        chat_id=str(chat_id),
+        issue_category="Customer Care (Live Chat)",
+        issue_detail="Customer meminta live chat dengan Customer Care.",
+        status="Waiting",
+        handoff_state="requested",
+        handoff_last_activity=datetime.datetime.utcnow(),
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    _record_live_message(db, t, "system", "Customer meminta live chat dengan Customer Care.")
+    return t
+
+
+def _start_handoff(chat_id: str, user_info: dict | None) -> None:
+    """Best-effort: create the handoff ticket (own DB session). Skips web: ids."""
+    if str(chat_id).startswith("web:"):
+        return
+    db = SessionLocal()
+    try:
+        if _active_handoff_for(db, str(chat_id)) is None:
+            _create_handoff_ticket(db, str(chat_id), user_info)
+    except Exception as e:
+        logging.warning("start handoff failed for %s: %s", chat_id, e)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _live_message_to_dict(m) -> dict:
     return {
         "id": m.id,
@@ -1318,6 +1359,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     if text:
         _maybe_send_calming(chat_id, text, user_info, background_tasks)
         response = process_message(str(chat_id), text)
+        if response.get("type") == "handoff_request":
+            _start_handoff(str(chat_id), user_info)
+            response = {"type": "message", "text": response["text"]}
         background_tasks.add_task(send_telegram_message, chat_id, response, user_info)
 
     return {"status": "ok"}

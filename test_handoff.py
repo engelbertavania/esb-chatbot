@@ -96,3 +96,48 @@ def test_record_live_message_and_bump_activity():
     finally:
         db.close()
         _clear()
+
+
+import pytest
+from fastapi.testclient import TestClient
+from agent import _fresh_session
+
+
+@pytest.fixture
+def tg(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_telegram_message",
+                        lambda chat_id, response, user_info=None:
+                        sent.append({"chat_id": chat_id, "text": response.get("text", ""),
+                                     "type": response.get("type")}))
+    main.SESSION_STATE.clear()
+    _clear()
+    client = TestClient(main.app)
+    headers = {"X-Telegram-Bot-Api-Secret-Token": main.TELEGRAM_WEBHOOK_SECRET}
+
+    def post(chat_id, text):
+        sent.clear()
+        client.post("/webhook", headers=headers,
+                    json={"message": {"chat": {"id": chat_id}, "text": text,
+                                      "from": {"id": chat_id, "first_name": "Budi"}}})
+        return list(sent)
+
+    yield client, headers, post, sent
+    _clear()
+
+
+def test_webhook_starts_handoff_and_creates_ticket(tg):
+    client, headers, post, sent = tg
+    main.SESSION_STATE["7100"] = {**_fresh_session(), "state": "CHOOSING_PREDEFINED",
+                                  "predefined_choices": [],
+                                  "chat_history": [{"role": "user", "text": "x", "ts": 0}]}
+    out = post(7100, main.HANDOFF_OPTION_VALUE)
+    assert any("tunggu" in s["text"].lower() for s in out)
+    db = SessionLocal()
+    try:
+        t = main._active_handoff_for(db, "7100")
+        assert t is not None and t.handoff_state == "requested"
+        msgs = db.query(LiveMessage).filter(LiveMessage.ticket_id == t.id).all()
+        assert any(m.sender == "system" for m in msgs)
+    finally:
+        db.close()
