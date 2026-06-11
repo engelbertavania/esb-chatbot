@@ -248,3 +248,33 @@ def test_end_resolves_and_resets_session(tg):
     assert any("berakhir" in s["text"].lower() for s in sent)
     assert main.SESSION_STATE["8300"]["state"] == "IDLE"
     assert main._relay_if_handoff("8300", "halo", None) is False
+
+
+def test_reap_auto_ends_idle_handoff(tg, monkeypatch):
+    client, headers, post, sent = tg
+    monkeypatch.setattr(main, "REAP_SECRET", "testsecret")
+    db = SessionLocal()
+    try:
+        old = datetime.datetime.utcnow() - datetime.timedelta(minutes=20)
+        db.add(Ticket(ticket_number="Ticket #REAP1", chat_id="8400",
+                      issue_category="Customer Care (Live Chat)", status="In Progress",
+                      handoff_state="active", handoff_last_activity=old))
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/reap", headers={"X-Reap-Secret": "testsecret"})
+    assert r.status_code == 200 and r.json()["handoffs_ended"] == 1
+    assert any("berakhir" in s["text"].lower() for s in sent)
+    db = SessionLocal()
+    try:
+        t = db.query(Ticket).filter(Ticket.chat_id == "8400").first()
+        assert t.handoff_state == "ended" and t.status == "Resolved"
+    finally:
+        db.close()
+        db2 = SessionLocal()
+        try:
+            db2.query(LiveMessage).delete()
+            db2.query(Ticket).filter(Ticket.issue_category == "Customer Care (Live Chat)").delete()
+            db2.commit()
+        finally:
+            db2.close()

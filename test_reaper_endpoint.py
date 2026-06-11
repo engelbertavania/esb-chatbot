@@ -171,7 +171,7 @@ def test_reap_does_nothing_for_recent_session(reap_client):
     client, headers, sent = reap_client
     _seed("8001", idle_min=3)
     body = client.post("/reap", headers=headers).json()
-    assert body == {"prompted": 0, "closed": 0}
+    assert body["prompted"] == 0 and body["closed"] == 0
     assert sent == []
 
 
@@ -209,7 +209,7 @@ def test_reap_ignores_sessions_without_history(reap_client):
     client, headers, sent = reap_client
     _seed("8004", idle_min=20, has_history=False)
     body = client.post("/reap", headers=headers).json()
-    assert body == {"prompted": 0, "closed": 0}
+    assert body["prompted"] == 0 and body["closed"] == 0
     assert sent == []
 
 

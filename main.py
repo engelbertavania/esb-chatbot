@@ -1520,4 +1520,26 @@ def reap_idle_sessions(request: Request, db: Session = Depends(get_db)):
             logging.warning("reap failed for %s: %s", row.chat_id, e)
             db.rollback()
 
-    return {"prompted": prompted, "closed": closed}
+    handoffs_ended = 0
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(seconds=HANDOFF_IDLE_TIMEOUT)
+    stale = (
+        db.query(Ticket)
+        .filter(Ticket.handoff_state.in_(["requested", "active"]),
+                Ticket.handoff_last_activity < cutoff)
+        .all()
+    )
+    for t in stale:
+        try:
+            send_telegram_message(int(t.chat_id), {"type": "message", "text": HANDOFF_END_TEXT})
+            t.handoff_state = "ended"
+            t.status = "Resolved"
+            db.commit()
+            _record_live_message(db, t, "system", "Live chat ditutup otomatis (tidak ada aktivitas).")
+            if t.chat_id in SESSION_STATE:
+                SESSION_STATE[t.chat_id] = _fresh_session()
+            handoffs_ended += 1
+        except Exception as e:
+            logging.warning("handoff auto-end failed for %s: %s", t.chat_id, e)
+            db.rollback()
+
+    return {"prompted": prompted, "closed": closed, "handoffs_ended": handoffs_ended}
