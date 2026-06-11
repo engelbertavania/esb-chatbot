@@ -806,6 +806,11 @@ def _present_low_conf(session: dict, candidates: list[str], original_query: str)
 
 PREDEFINED_SUGGESTIONS = 3  # PRD UX: show 3 ranked suggestions + escape hatch
 ESCAPE_OPTION = "Lainnya — jelaskan ulang"
+HANDOFF_OPTION = "💬 Chat dengan Customer Care"
+HANDOFF_REQUEST_TEXT = (
+    "Baik, mohon tunggu sebentar ya 🙏 Tim Customer Care kami akan segera "
+    "bergabung dengan Anda."
+)
 
 
 def _present_predefined_menu(session: dict, category: str, query: str, confidence: int) -> dict:
@@ -840,7 +845,7 @@ def _present_predefined_menu(session: dict, category: str, query: str, confidenc
     return {
         "type": "question",
         "text": text,
-        "options": choices + [ESCAPE_OPTION],
+        "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION],
     }
 
 
@@ -884,7 +889,7 @@ def _present_matching_predefined(session: dict, query: str) -> dict | None:
         "silakan pilih yang paling tepat:"
     )
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION]}
 
 
 def _present_category_menu(session: dict) -> dict:
@@ -916,7 +921,7 @@ def _present_category_issues(session: dict, category: str) -> dict:
     })
     text = f"Kategori: {category}\n\nMana yang paling sesuai dengan kendala Anda?"
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION]}
 
 
 def _present_specific_ca(session: dict, entry: dict) -> dict:
@@ -975,6 +980,14 @@ def process_message(chat_id: str, text: str) -> dict:
     session["followup_prompted_at"] = None
     msg = raw.lower()
     state = session["state"]
+
+    # ---- HUMAN_HANDOFF — a CC agent owns this chat; never auto-answer. ----
+    # The webhook normally intercepts handoff before reaching here (DB-backed);
+    # this is a fallback if only in-memory state says handoff.
+    if state == "HUMAN_HANDOFF":
+        text_out = "Mohon tunggu ya 🙏 Tim Customer Care kami akan segera membantu Anda."
+        _record_turn(session, "assistant", text_out)
+        return {"type": "message", "text": text_out}
 
     # ---- WRAP_UP — issue handled; stay on the SAME issue, don't re-classify ----
     # After a ticket is created or an issue resolved, the customer is often still
@@ -1055,6 +1068,10 @@ def process_message(chat_id: str, text: str) -> dict:
 
     # ---- CHOOSING_PREDEFINED — drill-down pick within a category ----
     if state == "CHOOSING_PREDEFINED":
+        if raw == HANDOFF_OPTION:
+            session["state"] = "HUMAN_HANDOFF"
+            _record_turn(session, "assistant", HANDOFF_REQUEST_TEXT)
+            return {"type": "handoff_request", "text": HANDOFF_REQUEST_TEXT}
         choices = session.get("predefined_choices", [])
         match = next((c for c in choices if c.lower() == msg), None)
         if match:
@@ -1113,11 +1130,14 @@ def process_message(chat_id: str, text: str) -> dict:
     matched = _present_matching_predefined(session, raw)
     if matched is not None:
         return matched
-    # Nothing relevant enough — ask them to rephrase.
+    # Nothing relevant enough — offer rephrasing or a direct handoff to CC.
     text_out = (
         "Maaf, saya belum menemukan kendala yang cocok dengan pesan Anda.\n"
         "Coba jelaskan dengan kata lain ya — misalnya \"pesanan tidak masuk POS\", "
-        "\"upload foto menu\", atau \"setting payment\"."
+        "\"upload foto menu\", atau \"setting payment\".\n\n"
+        "Atau, jika ingin berbicara langsung dengan tim kami, pilih di bawah ini:"
     )
+    session["state"] = "CHOOSING_PREDEFINED"
+    session["predefined_choices"] = []
     _record_turn(session, "assistant", text_out)
-    return {"type": "message", "text": text_out}
+    return {"type": "question", "text": text_out, "options": [HANDOFF_OPTION]}
