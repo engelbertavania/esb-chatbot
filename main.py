@@ -965,6 +965,37 @@ def handoff_join(ticket_id: int, body: dict, db: Session = Depends(get_db)):
     return _ticket_to_dict(t)
 
 
+@app.post("/api/tickets/{ticket_id}/handoff/message")
+def handoff_message(ticket_id: int, body: dict, db: Session = Depends(get_db)):
+    t = db.get(Ticket, ticket_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    if t.handoff_state != "active":
+        raise HTTPException(status_code=409, detail=f"handoff is {t.handoff_state}, not active")
+    text = ((body or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty message")
+    author = (body or {}).get("author") or t.handoff_agent or "Customer Care"
+    m = _record_live_message(db, t, "agent", text, author=author)
+    _bump_handoff_activity(db, t)
+    try:
+        send_telegram_message(int(t.chat_id), {"type": "message", "text": text})
+    except Exception as e:
+        logging.warning("handoff message send failed for %s: %s", t.chat_id, e)
+    return _live_message_to_dict(m)
+
+
+@app.get("/api/tickets/{ticket_id}/handoff/messages")
+def handoff_messages(ticket_id: int, after_id: int = 0, db: Session = Depends(get_db)):
+    rows = (
+        db.query(LiveMessage)
+        .filter(LiveMessage.ticket_id == ticket_id, LiveMessage.id > after_id)
+        .order_by(LiveMessage.id)
+        .all()
+    )
+    return [_live_message_to_dict(m) for m in rows]
+
+
 @app.get("/api/agents/workload")
 def agents_workload(db: Session = Depends(get_db)):
     """Active/resolved ticket counts per handler (assignee, else routed_queue).

@@ -202,3 +202,36 @@ def test_join_twice_returns_409(tg):
     tid = _seed_handoff("8101", "active")
     r = client.post(f"/api/tickets/{tid}/handoff/join", json={"agent": "CC - Budi"})
     assert r.status_code == 409
+
+
+def test_agent_message_records_and_sends(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8200", "active")
+    r = client.post(f"/api/tickets/{tid}/handoff/message",
+                    json={"text": "Halo, ada yang bisa dibantu?", "author": "CC - Ayu"})
+    assert r.status_code == 200 and r.json()["sender"] == "agent"
+    assert any(s["text"] == "Halo, ada yang bisa dibantu?" for s in sent)
+
+
+def test_agent_message_409_when_not_active(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8201", "requested")
+    r = client.post(f"/api/tickets/{tid}/handoff/message",
+                    json={"text": "hi", "author": "CC - Ayu"})
+    assert r.status_code == 409
+
+
+def test_get_messages_after_id(tg):
+    client, headers, post, sent = tg
+    tid = _seed_handoff("8202", "active")
+    db = SessionLocal()
+    try:
+        t = db.get(Ticket, tid)
+        m1 = main._record_live_message(db, t, "customer", "satu")
+        m2 = main._record_live_message(db, t, "agent", "dua", author="CC - Ayu")
+        first_id = m1.id
+    finally:
+        db.close()
+    r = client.get(f"/api/tickets/{tid}/handoff/messages", params={"after_id": first_id})
+    rows = r.json()
+    assert [m["text"] for m in rows] == ["dua"]
