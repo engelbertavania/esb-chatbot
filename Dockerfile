@@ -25,6 +25,10 @@ COPY vertex_corpus.jsonl ./
 # (COPY "file with spaces" ./) is not parsed correctly by the Docker builder.
 COPY ["CS Chatbot Dashboard _standalone_.html", "./"]
 
+# Content Architecture workbook — read at runtime by content_architecture.py
+# (load_ca). Missing file = match_ca() returns [] = bot can never answer.
+COPY ["Content architecture V.4.xlsx", "./"]
+
 EXPOSE 8080
 
 # Cloud Run injects $PORT; default to 8080 for local `docker run`.

@@ -55,6 +55,9 @@ faiss_index/
 *.md
 *.docx
 *.xlsx
+# EXCEPT the Content Architecture workbook — content_architecture.py reads it
+# directly at runtime (load_ca). Without it every CA match returns [] in prod.
+!Content architecture V.4.xlsx
 docs/
 *.skill
 
