@@ -50,11 +50,14 @@ def test_picking_handoff_option_returns_handoff_request():
     assert SESSION_STATE["6001"]["state"] == "HUMAN_HANDOFF"
 
 
-def test_no_match_offers_handoff_option():
+def test_no_match_shows_category_menu_without_handoff():
     SESSION_STATE.clear()
     resp = process_message("6002", "zxcv qwer asdf nonsense unmatchable")
     assert resp["type"] == "question"
-    assert HANDOFF_OPTION in resp["options"]
+    # Layer 1 (category menu): the CC handoff is NOT offered here anymore —
+    # it only appears at the answer step (layer 3).
+    assert HANDOFF_OPTION not in resp["options"]
+    assert "KENDALA PESANAN" in resp["options"]
 
 
 def test_human_handoff_state_does_not_auto_answer():

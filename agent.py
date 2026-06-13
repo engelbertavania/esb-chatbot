@@ -895,7 +895,7 @@ def _present_predefined_menu(session: dict, category: str, query: str, confidenc
     return {
         "type": "question",
         "text": text,
-        "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION],
+        "options": choices + [ESCAPE_OPTION],
     }
 
 
@@ -939,7 +939,7 @@ def _present_matching_predefined(session: dict, query: str) -> dict | None:
         "silakan pilih yang paling tepat:"
     )
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION]}
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
 
 
 def _present_category_menu(session: dict) -> dict:
@@ -956,7 +956,9 @@ def _present_category_menu(session: dict) -> dict:
         "Silakan pilih kategori kendala Anda:"
     )
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": labels + [HANDOFF_OPTION]}
+    # Layer 1 shows ONLY the categories — the live-chat handoff is offered later,
+    # at the answer step (layer 3), not here.
+    return {"type": "question", "text": text, "options": labels}
 
 
 def _present_category_issues(session: dict, category: str) -> dict:
@@ -975,7 +977,9 @@ def _present_category_issues(session: dict, category: str) -> dict:
     })
     text = f"Kategori: {category_label(category)}\n\nMana yang paling sesuai dengan kendala Anda?"
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION]}
+    # Layer 2 shows the predefined issues + "jelaskan ulang" — no live-chat option
+    # here; it appears at the answer step (layer 3).
+    return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION]}
 
 
 def _present_specific_ca(session: dict, entry: dict) -> dict:

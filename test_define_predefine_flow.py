@@ -35,7 +35,8 @@ def test_clear_description_auto_matches_category_to_predefined():
     assert r["type"] == "question"
     assert SESSION_STATE["d1"]["state"] == "CHOOSING_PREDEFINED"
     assert "Pesanan tidak masuk ke POS" in r["options"]
-    assert HANDOFF_OPTION in r["options"]
+    # Layer 2 (predefined list): CC handoff is NOT offered here (only layer 3).
+    assert HANDOFF_OPTION not in r["options"]
 
 
 def test_vague_description_shows_category_menu():
@@ -44,7 +45,8 @@ def test_vague_description_shows_category_menu():
     r = process_message("d2", "halo mau tanya")
     assert SESSION_STATE["d2"]["state"] == "MENU_CATEGORY"
     assert "KENDALA PESANAN" in r["options"]
-    assert HANDOFF_OPTION in r["options"]
+    # Layer 1 (category menu): CC handoff is NOT offered here (only layer 3).
+    assert HANDOFF_OPTION not in r["options"]
 
 
 def test_answer_step_offers_ya_tidak_and_cc():
