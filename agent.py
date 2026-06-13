@@ -864,7 +864,9 @@ def _offer_cc_or_ticket(session: dict) -> dict:
     a live chat with Customer Care and creating a support ticket."""
     session["state"] = "CHOOSING_UNRESOLVED"
     text = (
-        "Mohon maaf jawaban tadi belum menyelesaikan kendala Anda.\n\n"
+        "Mohon maaf yang sebesar-besarnya atas ketidaknyamanan ini 🙏 Saya "
+        "benar-benar memahami kekecewaan Anda, dan saya di sini untuk membantu "
+        "menyelesaikannya secepat mungkin.\n\n"
         "Anda ingin lanjut bagaimana?"
     )
     _record_turn(session, "assistant", text)
