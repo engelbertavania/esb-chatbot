@@ -1428,6 +1428,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     chat_id: int | None = None
     text: str | None = None
     attachment: dict | None = None
+    is_callback = False  # True when the update is a menu/button tap, not typed text
 
     if "message" in update:
         message = update["message"]
@@ -1437,6 +1438,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     elif "callback_query" in update:
         chat_id = update["callback_query"]["message"]["chat"]["id"]
         text = update["callback_query"]["data"]
+        is_callback = True
 
     if chat_id is None:
         return {"status": "ok"}
@@ -1487,7 +1489,11 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         session.setdefault("attachments", []).append(attachment)
 
     if text:
-        _maybe_send_calming(chat_id, text, user_info, background_tasks)
+        # De-escalation only on typed free-text — never on menu/button taps,
+        # whose option labels (e.g. "...lambat", "tidak bisa...") falsely trip
+        # the anger heuristic and would pop an apology while just navigating.
+        if not is_callback:
+            _maybe_send_calming(chat_id, text, user_info, background_tasks)
         response = process_message(str(chat_id), text)
         if response.get("type") == "handoff_request":
             _start_handoff(str(chat_id), user_info)
