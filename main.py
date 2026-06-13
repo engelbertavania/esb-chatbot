@@ -21,7 +21,7 @@ from database import engine, SessionLocal, Base, Ticket, CSATRating, TicketNote,
 from agent import (
     process_message, SESSION_STATE, _record_turn, _fresh_session,
     detect_anger, calming_message, idle_action,
-    HANDOFF_OPTION, _format_ticket_number,
+    HANDOFF_OPTION, _format_ticket_number, render_chat_history,
 )
 HANDOFF_OPTION_VALUE = HANDOFF_OPTION
 from rag import vertex_search_available
@@ -894,6 +894,22 @@ def escalate_ticket(ticket_id: int, payload: dict, db: Session = Depends(get_db)
     return _ticket_to_dict(ticket)
 
 
+@app.post("/api/tickets/{ticket_id}/priority")
+def set_ticket_priority(ticket_id: int, payload: dict, db: Session = Depends(get_db)):
+    """Set the ticket priority. Body: {"priority": "Low|Medium|High"}.
+
+    Editable at any time in any status (default Medium). Low=blue, Medium=amber,
+    High=maroon/red on the dashboard.
+    """
+    ticket = _get_ticket_or_404(ticket_id, db)
+    pr = (payload or {}).get("priority")
+    if pr not in ("Low", "Medium", "High"):
+        raise HTTPException(status_code=400, detail="priority must be Low, Medium, or High")
+    ticket.priority = pr
+    db.commit()
+    return _ticket_to_dict(ticket)
+
+
 @app.get("/api/tickets/{ticket_id}/notes")
 def list_ticket_notes(ticket_id: int, db: Session = Depends(get_db)):
     ticket = _get_ticket_or_404(ticket_id, db)
@@ -1290,9 +1306,10 @@ def _bump_handoff_activity(db, ticket) -> None:
     db.commit()
 
 
-def _create_handoff_ticket(db, chat_id: str, user_info: dict | None):
+def _create_handoff_ticket(db, chat_id: str, user_info: dict | None, chat_history: str = ""):
     """Create a 'requested' handoff Ticket for this chat and record a system
-    live_message. Returns the ticket."""
+    live_message. ``chat_history`` is the prior bot transcript so the CC agent
+    sees the full context in the live-chat pane. Returns the ticket."""
     info = user_info or {}
     t = Ticket(
         ticket_number=_format_ticket_number(),
@@ -1303,6 +1320,7 @@ def _create_handoff_ticket(db, chat_id: str, user_info: dict | None):
         chat_id=str(chat_id),
         issue_category="Customer Care (Live Chat)",
         issue_detail="Customer meminta live chat dengan Customer Care.",
+        chat_history=chat_history or "",
         status="Waiting",
         handoff_state="requested",
         handoff_last_activity=datetime.datetime.utcnow(),
@@ -1348,7 +1366,11 @@ def _start_handoff(chat_id: str, user_info: dict | None) -> None:
     db = SessionLocal()
     try:
         if _active_handoff_for(db, str(chat_id)) is None:
-            _create_handoff_ticket(db, str(chat_id), user_info)
+            # Carry the prior bot transcript onto the ticket so the live-chat pane
+            # shows the conversation that led here (issue #3).
+            session = SESSION_STATE.get(str(chat_id))
+            history = render_chat_history(session) if session else ""
+            _create_handoff_ticket(db, str(chat_id), user_info, chat_history=history)
     except Exception as e:
         logging.warning("start handoff failed for %s: %s", chat_id, e)
         db.rollback()

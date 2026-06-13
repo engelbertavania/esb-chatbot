@@ -110,41 +110,45 @@ def load_ca() -> list[dict]:
 
         first_cell = "" if row[0] is None else str(row[0]).strip()
 
-        # Section header row: first cell like "01  AKTIVASI..." and rest blank.
+        # Section header row: column A ("Error Define") like "01  AKTIVASI...".
+        # The V.4 sheet repeats the header into column B, so only require the
+        # DATA columns (C onward: prompt/response/...) to be blank, not column B.
         m = section_re.match(first_cell)
-        if m and all(c in (None, "") for c in row[1:]):
+        if m and all(c in (None, "") for c in row[2:]):
             num = m.group(1).zfill(2)
             current_category = SECTION_TO_CATEGORY.get(num)
             if current_category is None:
                 logger.warning("Unknown CA section %r — skipping", first_cell)
             continue
 
-        # Data row: must have an AI Response in column D.
-        if len(row) < 4 or not row[3]:
+        # Column layout (V.4): A=Error Define (section only), B=Predefined,
+        # C=Prompt, D=Model, E=AI Response, F=Issue Tag(s), G=Keywords/Triggers,
+        # H=Structure Type. A data row MUST have an AI Response in column E.
+        if len(row) < 5 or not row[4]:
             continue
         if current_category is None:
             continue  # data row before any section header
 
         # Cells use either "|" or newlines as separators (authoring varies);
         # split on both.
-        keywords_raw = str(row[5] or "")
+        keywords_raw = str(row[6] or "") if len(row) > 6 else ""
         keywords = [
             kw.lstrip("•").strip()
             for kw in re.split(r"[\n|]+", keywords_raw)
             if kw.strip()
         ]
-        tags_raw = str(row[4] or "")
+        tags_raw = str(row[5] or "") if len(row) > 5 else ""
         tags = [t.strip() for t in re.split(r"[\n|]+", tags_raw) if t.strip()]
 
         entries.append({
-            "predefined": first_cell,
-            "prompt": str(row[1] or "").strip(),
-            "model": str(row[2] or MODEL_NAME).strip(),
-            "response": str(row[3] or "").strip(),
+            "predefined": str(row[1] or "").strip(),
+            "prompt": str(row[2] or "").strip(),
+            "model": str(row[3] or MODEL_NAME).strip(),
+            "response": str(row[4] or "").strip(),
             "tags": tags,
             "keywords": keywords,
-            "structure": str(row[6] or "").strip() if len(row) > 6 else "",
-            "entities": str(row[7] or "").strip() if len(row) > 7 else "",
+            "structure": str(row[7] or "").strip() if len(row) > 7 else "",
+            "entities": "",
             "category": current_category,
         })
 
@@ -236,6 +240,61 @@ def match_ca(query: str, category: str | None = None, k: int = 3) -> list[dict]:
 def list_categories() -> list[str]:
     """All MVP categories represented in the CA — useful for taxonomy validation."""
     return sorted({e["category"] for e in load_ca()})
+
+
+@lru_cache(maxsize=1)
+def issue_define_options() -> list[dict]:
+    """The 10 merchant-facing "issue define" category labels.
+
+    Read from the dedicated ``issue define`` sheet (column A, rows like
+    ``01  AKTIVASI/NON AKTIVASI OZE``). Each label is paired with the internal
+    English MVP ``category`` (via :data:`SECTION_TO_CATEGORY`) so the agent can
+    show the Indonesian label to the merchant but still filter entries by the
+    canonical category.
+
+    Returns ``[{"num", "label", "category"}]`` in sheet order. Falls back to the
+    distinct categories found in the loaded entries if the sheet is missing.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    if CA_FILE.exists():
+        try:
+            import openpyxl  # local import keeps openpyxl optional
+            wb = openpyxl.load_workbook(CA_FILE, data_only=True)
+            if "issue define" in wb.sheetnames:
+                section_re = re.compile(r"^(\d{1,2})\s+(.+)$")
+                for row in wb["issue define"].iter_rows(values_only=True):
+                    first = "" if not row or row[0] is None else str(row[0]).strip()
+                    m = section_re.match(first)
+                    if not m:
+                        continue
+                    num = m.group(1).zfill(2)
+                    category = SECTION_TO_CATEGORY.get(num)
+                    if category is None or num in seen:
+                        continue
+                    seen.add(num)
+                    out.append({"num": num, "label": m.group(2).strip(), "category": category})
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to read 'issue define' sheet: %s", e)
+
+    if not out:
+        # Fallback: derive from the categories present in the loaded entries.
+        for e in load_ca():
+            if e["category"] not in seen:
+                seen.add(e["category"])
+                out.append({"num": "", "label": e["category"], "category": e["category"]})
+
+    return out
+
+
+def category_label(category: str) -> str:
+    """Return the merchant-facing Indonesian label for an internal category,
+    falling back to the category name itself when no mapping exists."""
+    for o in issue_define_options():
+        if o["category"] == category:
+            return o["label"]
+    return category
 
 
 def entries_in_category(category: str) -> list[dict]:

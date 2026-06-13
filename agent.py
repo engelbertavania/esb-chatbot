@@ -40,6 +40,8 @@ from content_architecture import (
     entries_in_category,
     find_by_predefined,
     list_categories,
+    issue_define_options,
+    category_label,
     MODEL_NAME,
 )
 
@@ -596,7 +598,13 @@ def _present_step(session: dict) -> dict:
         )
 
     _record_turn(session, "assistant", body)
-    return {"type": "question", "text": body, "options": ["Ya", "Tidak"]}
+    # Layer 3 (the answer): besides Ya/Tidak, surface the live-chat handoff so a
+    # merchant who isn't helped can reach Customer Care directly (sits BELOW the
+    # Ya/Tidak per the menu-driven flow).
+    options = ["Ya", "Tidak"]
+    if source == "ca":
+        options.append(HANDOFF_OPTION)
+    return {"type": "question", "text": body, "options": options}
 
 
 def _start_troubleshooting(session: dict, category: str, query: str, confidence: int) -> dict:
@@ -807,10 +815,52 @@ def _present_low_conf(session: dict, candidates: list[str], original_query: str)
 PREDEFINED_SUGGESTIONS = 3  # PRD UX: show 3 ranked suggestions + escape hatch
 ESCAPE_OPTION = "Lainnya — jelaskan ulang"
 HANDOFF_OPTION = "💬 Chat dengan Customer Care"
+TICKET_OPTION = "🎫 Buat tiket support"
 HANDOFF_REQUEST_TEXT = (
     "Baik, mohon tunggu sebentar ya 🙏 Tim Customer Care kami akan segera "
     "bergabung dengan Anda."
 )
+
+# Score at/above which a free-text description is considered a CLEAR match to a
+# single category — used to auto-skip the category menu (see _best_category).
+CATEGORY_CONFIDENT_SCORE = 3.0
+
+# Polite decline for out-of-context / confidential questions after a ticket has
+# already been raised (issue #7).
+CONFIDENTIAL_DECLINE = (
+    "Mohon maaf 🙏 jika pertanyaan bersifat confidential atau di luar layanan "
+    "ESB Order, kami tidak bisa menjawabnya di sini.\n\n"
+    "Untuk kendala baru terkait ESB Order, silakan ketik /start ya."
+)
+
+
+def _best_category(query: str, min_score: float = CATEGORY_CONFIDENT_SCORE) -> Optional[str]:
+    """Return the internal category of the best CA match when it scores at/above
+    ``min_score`` (i.e. the description clearly belongs to one category), else
+    ``None``."""
+    matches = match_ca(query, k=1)
+    if matches and matches[0].get("match_score", 0) >= min_score:
+        return matches[0].get("category")
+    return None
+
+
+def _handoff_request(session: dict) -> dict:
+    """Enter the human-handoff state and emit the request signal main.py acts on."""
+    session["state"] = "HUMAN_HANDOFF"
+    _record_turn(session, "assistant", HANDOFF_REQUEST_TEXT)
+    return {"type": "handoff_request", "text": HANDOFF_REQUEST_TEXT}
+
+
+def _offer_cc_or_ticket(session: dict) -> dict:
+    """Layer-3 'Tidak' branch: the predefined answer didn't help, so offer BOTH
+    a live chat with Customer Care and creating a support ticket."""
+    session["state"] = "CHOOSING_UNRESOLVED"
+    text = (
+        "Mohon maaf jawaban tadi belum menyelesaikan kendala Anda.\n\n"
+        "Anda ingin lanjut bagaimana?"
+    )
+    _record_turn(session, "assistant", text)
+    return {"type": "question", "text": text, "options": [HANDOFF_OPTION, TICKET_OPTION]}
 
 
 def _present_predefined_menu(session: dict, category: str, query: str, confidence: int) -> dict:
@@ -893,21 +943,25 @@ def _present_matching_predefined(session: dict, query: str) -> dict | None:
 
 
 def _present_category_menu(session: dict) -> dict:
-    """First-contact menu: list the CA categories (column-A issues are grouped
-    under these 10 categories). Merchant picks one to drill into its issues."""
-    cats = list_categories()
-    session.update({"state": "MENU_CATEGORY", "menu_categories": cats})
+    """Layer 1 (define): list the 10 merchant-facing "issue define" categories.
+    Merchant picks one to drill into its predefined issues."""
+    opts = issue_define_options()
+    labels = [o["label"] for o in opts]
+    session.update({
+        "state": "MENU_CATEGORY",
+        "menu_map": {o["label"].lower(): o["category"] for o in opts},
+    })
     text = (
         f"Halo! Saya {MODEL_NAME}, asisten dukungan ESB Order.\n\n"
         "Silakan pilih kategori kendala Anda:"
     )
     _record_turn(session, "assistant", text)
-    return {"type": "question", "text": text, "options": cats}
+    return {"type": "question", "text": text, "options": labels + [HANDOFF_OPTION]}
 
 
 def _present_category_issues(session: dict, category: str) -> dict:
-    """List every predefined issue (CA column A) in the chosen category, so the
-    merchant can pick the exact one and get its column-D response."""
+    """Layer 2 (predefine): list every predefined issue (CA column B) in the
+    chosen category, so the merchant picks the exact one and gets its response."""
     entries = entries_in_category(category)
     choices = [e["predefined"] for e in entries]
     if not choices:
@@ -919,7 +973,7 @@ def _present_category_issues(session: dict, category: str) -> dict:
         "confidence": 100,
         "predefined_choices": choices,
     })
-    text = f"Kategori: {category}\n\nMana yang paling sesuai dengan kendala Anda?"
+    text = f"Kategori: {category_label(category)}\n\nMana yang paling sesuai dengan kendala Anda?"
     _record_turn(session, "assistant", text)
     return {"type": "question", "text": text, "options": choices + [ESCAPE_OPTION, HANDOFF_OPTION]}
 
@@ -996,6 +1050,16 @@ def process_message(chat_id: str, text: str) -> dict:
     # after the session auto-closes on silence (reaper) or the customer types
     # /start (handled above).
     if state == "WRAP_UP":
+        # Still allow reaching a human if they ask.
+        if raw == HANDOFF_OPTION:
+            return _handoff_request(session)
+        # Out-of-context guard (issue #7): once a ticket exists, a follow-up that
+        # doesn't relate to any known ESB Order topic (confidential / off-scope)
+        # gets a polite decline instead of a free-form answer. On-topic follow-ups
+        # are still acknowledged on the SAME ticket below.
+        if _best_category(raw, min_score=MIN_RELEVANCE_SCORE) is None:
+            _record_turn(session, "assistant", CONFIDENTIAL_DECLINE)
+            return {"type": "message", "text": CONFIDENTIAL_DECLINE}
         tnum = session.get("last_ticket_number")
         if tnum:
             text_out = (
@@ -1028,25 +1092,32 @@ def process_message(chat_id: str, text: str) -> dict:
             "options": ["1", "2", "3", "4", "5"],
         }
 
-    # ---- TROUBLESHOOTING — sequential Yes/No per step (US2) ----
+    # ---- TROUBLESHOOTING — answer step: Ya / Tidak / Chat dengan CC ----
     if state == "TROUBLESHOOTING":
+        if raw == HANDOFF_OPTION:
+            return _handoff_request(session)
         if msg in _AFFIRMATIVE:
             return _resolved_close(session)
         if msg in _NEGATIVE:
-            session["unresolved_attempts"] += 1
-            session["step_index"] += 1
-            # AC2.3 — escalate after 3 consecutive No OR when steps exhausted.
-            if (session["unresolved_attempts"] >= MAX_UNRESOLVED_ATTEMPTS
-                    or session["step_index"] >= len(session["solution_steps"])):
-                return _begin_escalation(session)
-            return _present_step(session)
-        # AC2.6 / AC2.7 — ambiguous response: retry once, then proceed.
+            # Answer didn't help — offer live chat with CC OR a support ticket.
+            return _offer_cc_or_ticket(session)
+        # Ambiguous response: retry once with the same options.
         nudge = (
-            "Mohon balas 'Ya' jika masalah sudah teratasi, atau 'Tidak' untuk "
-            "lanjut ke langkah berikutnya."
+            "Mohon balas 'Ya' jika masalah sudah teratasi, atau 'Tidak' jika "
+            "belum terselesaikan."
         )
         _record_turn(session, "assistant", nudge)
-        return {"type": "question", "text": nudge, "options": ["Ya", "Tidak"]}
+        return {"type": "question", "text": nudge, "options": ["Ya", "Tidak", HANDOFF_OPTION]}
+
+    # ---- CHOOSING_UNRESOLVED — answer didn't help: pick CC or a ticket ----
+    if state == "CHOOSING_UNRESOLVED":
+        if raw == HANDOFF_OPTION:
+            return _handoff_request(session)
+        if raw == TICKET_OPTION or "tiket" in msg:
+            return _begin_escalation(session)
+        nudge = "Silakan pilih salah satu opsi di bawah ya."
+        _record_turn(session, "assistant", nudge)
+        return {"type": "question", "text": nudge, "options": [HANDOFF_OPTION, TICKET_OPTION]}
 
     # ---- CHOOSING_CATEGORY — low-confidence pick (AC1.9.1) ----
     if state == "CHOOSING_CATEGORY":
@@ -1066,12 +1137,21 @@ def process_message(chat_id: str, text: str) -> dict:
         session["state"] = "IDLE"
         # fall through to IDLE handling
 
+    # ---- MENU_CATEGORY — Layer 1: pick one of the 10 issue-define categories ----
+    if state == "MENU_CATEGORY":
+        if raw == HANDOFF_OPTION:
+            return _handoff_request(session)
+        cat = session.get("menu_map", {}).get(msg)
+        if cat:
+            return _present_category_issues(session, cat)
+        # Free text — treat as a description and auto-match / re-menu below.
+        session["state"] = "IDLE"
+        # fall through to IDLE handling
+
     # ---- CHOOSING_PREDEFINED — drill-down pick within a category ----
     if state == "CHOOSING_PREDEFINED":
         if raw == HANDOFF_OPTION:
-            session["state"] = "HUMAN_HANDOFF"
-            _record_turn(session, "assistant", HANDOFF_REQUEST_TEXT)
-            return {"type": "handoff_request", "text": HANDOFF_REQUEST_TEXT}
+            return _handoff_request(session)
         choices = session.get("predefined_choices", [])
         match = next((c for c in choices if c.lower() == msg), None)
         if match:
@@ -1124,20 +1204,12 @@ def process_message(chat_id: str, text: str) -> dict:
         session["ticket_form"]["branch"] = raw
         return _finalize_ticket(session)
 
-    # ---- IDLE — merchant described their issue ----
-    # Surface the predefined issues (CA column A) most relevant to their chat;
-    # they pick the exact one and get its column-D response. No LLM.
-    matched = _present_matching_predefined(session, raw)
-    if matched is not None:
-        return matched
-    # Nothing relevant enough — offer rephrasing or a direct handoff to CC.
-    text_out = (
-        "Maaf, saya belum menemukan kendala yang cocok dengan pesan Anda.\n"
-        "Coba jelaskan dengan kata lain ya — misalnya \"pesanan tidak masuk POS\", "
-        "\"upload foto menu\", atau \"setting payment\".\n\n"
-        "Atau, jika ingin berbicara langsung dengan tim kami, pilih di bawah ini:"
-    )
-    session["state"] = "CHOOSING_PREDEFINED"
-    session["predefined_choices"] = []
-    _record_turn(session, "assistant", text_out)
-    return {"type": "question", "text": text_out, "options": [HANDOFF_OPTION]}
+    # ---- IDLE — merchant described their issue (3-layer flow) ----
+    # Layer 1 (define): if the description CLEARLY belongs to one category, skip
+    # straight to that category's predefined issues; otherwise show the 10
+    # issue-define categories. Either path leads to Layer 2 (predefine) then
+    # Layer 3 (the answer + Ya/Tidak/Chat dengan CC). No LLM.
+    cat = _best_category(raw)
+    if cat is not None:
+        return _present_category_issues(session, cat)
+    return _present_category_menu(session)
