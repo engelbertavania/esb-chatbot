@@ -16,6 +16,7 @@ __pycache__/
 
 # Local data
 tickets.db
+test_tickets.db
 faiss_index/
 
 # OS / IDE
@@ -25,6 +26,13 @@ Thumbs.db
 
 # Tooling
 .claude/
+
+# Local-only config & scratch — never commit (may hold tokens / are noise)
+.mcp.json
+*.skill
+check_image_flow.py
+# Pasted screenshots dropped at the repo root
+/*.png
 
 # Excel temp lock files
 ~$*.xlsx
