@@ -28,7 +28,7 @@ import os
 import random
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from typing import Optional
 
@@ -543,11 +543,19 @@ def _format_ticket_number() -> str:
     return f"Ticket #{yy}{rand}"
 
 
+# Western Indonesia Time (WIB). Fixed UTC+7 — Indonesia has no DST, so a fixed
+# offset is correct and avoids needing the tzdata package in the slim image.
+WIB = timezone(timedelta(hours=7))
+
+
 def render_chat_history(session: dict) -> str:
-    """Plain-text transcript embedded in the generated ticket."""
+    """Plain-text transcript embedded in the generated ticket.
+
+    Timestamps are rendered in WIB so the dashboard shows the merchant's local
+    time (the server runs in UTC)."""
     lines: list[str] = []
     for turn in session.get("chat_history", []):
-        ts = datetime.fromtimestamp(turn.get("ts", 0)).strftime("%H:%M:%S")
+        ts = datetime.fromtimestamp(turn.get("ts", 0), tz=WIB).strftime("%H:%M:%S")
         actor = "Merchant" if turn["role"] == "user" else "Bot"
         lines.append(f"[{ts}] {actor}: {turn['text']}")
     return "\n".join(lines)
