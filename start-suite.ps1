@@ -16,7 +16,8 @@ $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
 # --- Preflight ---------------------------------------------------------------
-$venvPython = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
+# venv lives inside backend/.
+$venvPython = Join-Path $PSScriptRoot "backend\venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     throw "venv python not found at $venvPython. Create the venv and install deps first."
 }

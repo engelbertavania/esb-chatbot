@@ -36,11 +36,13 @@ with Customer Care or a support ticket when it doesn't.
 ## Repository layout
 
 ```
-backend/    FastAPI app, agent, RAG, tests, Dockerfile + deploy/tunnel scripts
+backend/    FastAPI app, agent, RAG, tests, Dockerfile + deploy/tunnel scripts, venv/
 frontend/   Next.js dashboard (git submodule)
 docs/        specs & plans
-venv/        Python virtualenv (created at the repo root)
 ```
+
+The Python virtualenv lives at `backend/venv/` so the whole backend project is
+self-contained in one folder.
 
 ## Backend layout (`backend/`)
 
@@ -59,9 +61,10 @@ venv/        Python virtualenv (created at the repo root)
 ## Setup
 
 ```bash
+cd backend
 python -m venv venv && . venv/Scripts/activate   # Windows: venv\Scripts\Activate.ps1
-pip install -r backend/requirements.txt
-cp backend/.env.example backend/.env             # then fill in real values
+pip install -r requirements.txt
+cp .env.example .env                             # then fill in real values
 ```
 
 Configuration is via environment variables — see [`backend/.env.example`](backend/.env.example)
@@ -88,8 +91,13 @@ cd frontend && npm install && npm run dev
 
 ## Tests
 
+`pytest` is a dev-only dependency (kept out of the runtime image), so install
+the dev requirements once, then run the suite:
+
 ```bash
-cd backend && pytest -q
+cd backend
+pip install -r requirements-dev.txt   # pytest + runtime deps
+pytest -q
 ```
 
 ## Deploy

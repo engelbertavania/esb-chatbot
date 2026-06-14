@@ -19,7 +19,7 @@
         .\deploy.ps1 -Project my-proj -Region us-central1 -Service esb-chatbot
 
     After it prints the service URL, register the Telegram webhook:
-        ..\venv\Scripts\python.exe _register_webhook.py https://<service-url>
+        .\venv\Scripts\python.exe _register_webhook.py https://<service-url>
 
     NOTE: keep this file pure ASCII. Windows PowerShell 5.1 reads a BOM-less
     .ps1 as cp1252, so any multibyte char (em-dash, smart quote) corrupts the
@@ -106,6 +106,6 @@ $url = (& gcloud run services describe $Service --region $Region --format "value
 Write-Host "`nDeployed. Service URL:" -ForegroundColor Green
 Write-Host "  $url"
 Write-Host "`nNext - register the Telegram webhook:" -ForegroundColor Green
-Write-Host "  ..\venv\Scripts\python.exe _register_webhook.py $url"
+Write-Host "  .\venv\Scripts\python.exe _register_webhook.py $url"
 Write-Host "`nThen set CORS_ALLOW_ORIGINS to your Vercel URL, e.g.:" -ForegroundColor Green
 Write-Host "  gcloud run services update $Service --region $Region --set-env-vars CORS_ALLOW_ORIGINS=https://your-app.vercel.app"

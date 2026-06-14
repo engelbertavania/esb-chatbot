@@ -1,0 +1,4 @@
+# Development / test dependencies (NOT needed at runtime — kept out of the
+# Cloud Run image). Install with:  pip install -r requirements-dev.txt
+-r requirements.txt
+pytest
