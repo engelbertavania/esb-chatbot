@@ -21,6 +21,11 @@ if (-not (Test-Path $venvPython)) {
     throw "venv python not found at $venvPython. Create the venv and install deps first."
 }
 
+$backendDir = Join-Path $PSScriptRoot "backend"
+if (-not (Test-Path (Join-Path $backendDir "main.py"))) {
+    throw "backend not found at $backendDir (expected backend\main.py)."
+}
+
 $frontendDir = Join-Path $PSScriptRoot "frontend"
 if (-not (Test-Path (Join-Path $frontendDir "package.json"))) {
     throw "frontend not found at $frontendDir. Run 'git submodule update --init' then 'npm install' in frontend."
@@ -44,7 +49,7 @@ foreach ($p in @($BackendPort, $FrontendPort)) {
 
 # --- Launch backend ----------------------------------------------------------
 Write-Host "Starting FastAPI backend on http://localhost:$BackendPort ..."
-Start-Process -FilePath "powershell" -WorkingDirectory $PSScriptRoot -ArgumentList @(
+Start-Process -FilePath "powershell" -WorkingDirectory $backendDir -ArgumentList @(
     "-NoExit", "-Command",
     "`$host.UI.RawUI.WindowTitle = 'Sukabot backend :$BackendPort'; & '$venvPython' -m uvicorn main:app --port $BackendPort"
 ) | Out-Null

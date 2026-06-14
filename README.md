@@ -33,7 +33,16 @@ with Customer Care or a support ticket when it doesn't.
 - **Content Architecture** — 50 reviewed responses in `Content architecture V.4.xlsx` (`content_architecture.py`)
 - **Next.js** dashboard — `frontend/` git submodule
 
-## Project layout
+## Repository layout
+
+```
+backend/    FastAPI app, agent, RAG, tests, Dockerfile + deploy/tunnel scripts
+frontend/   Next.js dashboard (git submodule)
+docs/        specs & plans
+venv/        Python virtualenv (created at the repo root)
+```
+
+## Backend layout (`backend/`)
 
 | File | Responsibility |
 |------|----------------|
@@ -51,22 +60,24 @@ with Customer Care or a support ticket when it doesn't.
 
 ```bash
 python -m venv venv && . venv/Scripts/activate   # Windows: venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cp .env.example .env                             # then fill in real values
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env             # then fill in real values
 ```
 
-Configuration is via environment variables — see [`.env.example`](.env.example)
+Configuration is via environment variables — see [`backend/.env.example`](backend/.env.example)
 for the full list (Gemini/Vertex, `DATABASE_URL`, `TELEGRAM_TOKEN`,
 `TELEGRAM_WEBHOOK_SECRET`, `REAP_SECRET`, …). **Never commit `.env`.**
 
 ## Run locally
 
 ```bash
+cd backend
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Expose the webhook over a tunnel (`start-tunnel.ps1`) and register it with
-`_register_webhook.py <public-url>`.
+Expose the webhook over a tunnel (`backend/start-tunnel.ps1`) and register it
+with `backend/_register_webhook.py <public-url>`. Or boot both backend and
+frontend at once with `./start-suite.ps1` from the repo root.
 
 The dashboard lives in the submodule:
 
@@ -78,12 +89,12 @@ cd frontend && npm install && npm run dev
 ## Tests
 
 ```bash
-pytest -q
+cd backend && pytest -q
 ```
 
 ## Deploy
 
-- **Backend → Google Cloud Run:** `./deploy.ps1 -Project <gcp-project-id>`
+- **Backend → Google Cloud Run:** `cd backend && ./deploy.ps1 -Project <gcp-project-id>`
   (reads `.env`, builds via the `Dockerfile`, deploys). A Cloud Scheduler job
   calls `POST /reap` every minute to auto-close idle sessions.
 - **Frontend → Vercel:** auto-deploys on push to the frontend repo's `main`.

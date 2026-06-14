@@ -22,7 +22,8 @@ if (-not $ngrok) {
     throw "ngrok not found. Install it (winget install ngrok) and run 'ngrok config add-authtoken <TOKEN>'."
 }
 
-$venvPython = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
+# venv lives at the repo root (one level up from backend/).
+$venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) { throw "venv python not found at $venvPython" }
 
 $api = "http://127.0.0.1:4040/api/tunnels"

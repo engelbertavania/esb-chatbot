@@ -15,7 +15,8 @@ if (-not (Test-Path $cloudflared)) {
     $cloudflared = (Get-Command cloudflared -ErrorAction Stop).Source
 }
 
-$venvPython = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
+# venv lives at the repo root (one level up from backend/).
+$venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     throw "venv python not found at $venvPython"
 }
