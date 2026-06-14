@@ -1225,9 +1225,8 @@ def _validate_attachment(att: dict, session_attachments: list[dict]) -> str | No
 
 # Out-of-band idle-session messages — used by the scheduled /reap pass.
 FOLLOWUP_PROMPT_TEXT = (
-    "Apakah masih ada yang bisa kami bantu? 🙏 Jika tidak ada balasan "
-    "beberapa saat lagi, sesi ini akan saya tutup. Anda bisa mulai lagi "
-    "kapan saja dengan mengirim pesan."
+    "Apakah masih ada yang bisa kami bantu? Jika tidak ada balasan, sesi "
+    "ini akan berakhir otomatis. Anda bisa bertanya lagi kapan saja."
 )
 SESSION_CLOSE_TEXT = (
     "Sesi saya tutup dulu ya karena tidak ada balasan. Terima kasih sudah "

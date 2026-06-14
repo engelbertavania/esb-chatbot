@@ -825,8 +825,8 @@ ESCAPE_OPTION = "Lainnya — jelaskan ulang"
 HANDOFF_OPTION = "💬 Chat dengan Customer Care"
 TICKET_OPTION = "🎫 Buat tiket support"
 HANDOFF_REQUEST_TEXT = (
-    "Baik, mohon tunggu sebentar ya 🙏 Tim Customer Care kami akan segera "
-    "bergabung dengan Anda."
+    "Baik, mohon tunggu sebentar ya. Tim Customer Care akan segera "
+    "membantu Anda."
 )
 
 # Score at/above which a free-text description is considered a CLEAR match to a
@@ -840,6 +840,35 @@ CONFIDENTIAL_DECLINE = (
     "ESB Order, kami tidak bisa menjawabnya di sini.\n\n"
     "Untuk kendala baru terkait ESB Order, silakan ketik /start ya."
 )
+
+# Warm sign-off when, after an issue is wrapped up, the customer signals they
+# need nothing further ("tidak ada, makasih ya").
+CLOSING_THANKS_TEXT = (
+    "Terima kasih kembali! Senang bisa membantu. Jika ada yang ingin "
+    "ditanyakan lagi, langsung hubungi kami ya."
+)
+
+# Phrases that read as "nothing more needed" — kept multi-word / unambiguous so
+# we don't trip on an on-topic follow-up.
+_CLOSING_NO_MORE = (
+    "tidak ada", "tdk ada", "ga ada", "gak ada", "gaada", "ngga ada",
+    "nggak ada", "tidak ada lagi", "udah cukup", "sudah cukup", "cukup",
+    "udahan", "sudah selesai",
+)
+_CLOSING_THANKS = (
+    "makasih", "makasi", "terima kasih", "terimakasih", "trims", "thanks",
+    "thank you", "thx", "tengkyu",
+)
+
+
+def _is_closing_thanks(text: str) -> bool:
+    """True when the customer is signing off — a thank-you and/or a clear
+    'nothing more' so we close warmly instead of logging another follow-up."""
+    low = (text or "").lower().strip()
+    if not low:
+        return False
+    return (any(t in low for t in _CLOSING_THANKS)
+            or any(n in low for n in _CLOSING_NO_MORE))
 
 
 def _best_category(query: str, min_score: float = CATEGORY_CONFIDENT_SCORE) -> Optional[str]:
@@ -864,10 +893,9 @@ def _offer_cc_or_ticket(session: dict) -> dict:
     a live chat with Customer Care and creating a support ticket."""
     session["state"] = "CHOOSING_UNRESOLVED"
     text = (
-        "Mohon maaf yang sebesar-besarnya atas ketidaknyamanan ini 🙏 Saya "
-        "benar-benar memahami kekecewaan Anda, dan saya di sini untuk membantu "
-        "menyelesaikannya secepat mungkin.\n\n"
-        "Anda ingin lanjut bagaimana?"
+        "Mohon maaf jika jawabanya belum sesuai harapan. Tim customer care "
+        "kami akan segera menghubungi Anda untuk membantu menyelesaikan "
+        "kendalanya."
     )
     _record_turn(session, "assistant", text)
     return {"type": "question", "text": text, "options": [HANDOFF_OPTION, TICKET_OPTION]}
@@ -1067,6 +1095,10 @@ def process_message(chat_id: str, text: str) -> dict:
         # Still allow reaching a human if they ask.
         if raw == HANDOFF_OPTION:
             return _handoff_request(session)
+        # Closing pleasantry ("tidak ada, makasih ya") — sign off warmly.
+        if _is_closing_thanks(raw):
+            _record_turn(session, "assistant", CLOSING_THANKS_TEXT)
+            return {"type": "message", "text": CLOSING_THANKS_TEXT}
         # Out-of-context guard (issue #7): once a ticket exists, a follow-up that
         # doesn't relate to any known ESB Order topic (confidential / off-scope)
         # gets a polite decline instead of a free-form answer. On-topic follow-ups
@@ -1117,8 +1149,8 @@ def process_message(chat_id: str, text: str) -> dict:
             return _offer_cc_or_ticket(session)
         # Ambiguous response: retry once with the same options.
         nudge = (
-            "Mohon balas 'Ya' jika masalah sudah teratasi, atau 'Tidak' jika "
-            "belum terselesaikan."
+            "Sebelum melanjutkan, apakah kendala sebelumnya sudah terselesaikan? "
+            'Balas "Ya" atau "Tidak".'
         )
         _record_turn(session, "assistant", nudge)
         return {"type": "question", "text": nudge, "options": ["Ya", "Tidak", HANDOFF_OPTION]}
